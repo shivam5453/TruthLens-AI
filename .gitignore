@@ -1,0 +1,40 @@
+# Python Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python Cache and Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment Variables & Secrets
+.env
+.env.*
+.env.local
+!.env.example
+
+# Frontend Dependencies & Builds
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Explicitly KEEP trained models, reports, and dataset files for deployment
+!ml/models/*.pkl
+!ml/models/*.json
+!ml/reports/*.json
+!ml/reports/*.csv
+!data/*.csv
+
+data/*.csv

@@ -1,0 +1,18 @@
+{
+    "project": "TruthLens AI",
+    "task": "Fake News Detection",
+    "best_model": "Linear SVM",
+    "label_mapping": {
+        "0": "Fake",
+        "1": "Real"
+    },
+    "vectorizer": {
+        "type": "TF-IDF",
+        "ngram_range": [
+            1,
+            2
+        ],
+        "max_features": 100000,
+        "min_df": 2
+    }
+}
