@@ -6,12 +6,17 @@ import joblib
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from bson import ObjectId
 
 from .database import analysis_collection, test_database_connection
+from .routes_auth import router as auth_router
+from .routes_user import router as user_router
+from .routes_admin import router as admin_router
+from .auth import get_optional_current_user
+from .evidence import retrieve_live_evidence
 
 
 # ============================================================
@@ -82,12 +87,22 @@ app.add_middleware(
 
 
 # ============================================================
+# MOUNT MODULAR ROUTERS
+# ============================================================
+
+app.include_router(auth_router)
+app.include_router(user_router)
+app.include_router(admin_router)
+
+
+# ============================================================
 # REQUEST MODEL
 # ============================================================
 
 class NewsRequest(BaseModel):
     title: str = ""
     text: str = ""
+    fetch_evidence: bool = True
 
 
 # ============================================================
@@ -270,7 +285,10 @@ def get_stats():
 # ============================================================
 
 @app.post("/api/analyze")
-def analyze_news(request: NewsRequest):
+async def analyze_news(
+    request: NewsRequest,
+    current_user: Optional[dict] = Depends(get_optional_current_user)
+):
     if model is None or vectorizer is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -322,8 +340,40 @@ def analyze_news(request: NewsRequest):
     )
 
     # ========================================================
+    # LIVE EVIDENCE RETRIEVAL & CORROBORATION (NON-BLOCKING)
+    # ========================================================
+    evidence_data = None
+    if request.fetch_evidence:
+        try:
+            ev_summary = await retrieve_live_evidence(
+                title=request.title,
+                text=request.text,
+                prediction=prediction
+            )
+            evidence_data = ev_summary.model_dump() if hasattr(ev_summary, "model_dump") else ev_summary
+        except Exception as ev_err:
+            print(f"Evidence retrieval warning: {ev_err}")
+            evidence_data = {
+                "status": "unavailable",
+                "query": "",
+                "sources": [],
+                "items": [],
+                "message": "Live evidence retrieval was unable to complete.",
+                "corroboration_notes": "Live evidence retrieval was unable to complete.",
+                "total_found": 0
+            }
+
+    # ========================================================
+    # USER CONTEXT (IF AUTHENTICATED)
+    # ========================================================
+    user_id = None
+    if current_user:
+        user_id = current_user.get("id") or str(current_user.get("_id", ""))
+
+    # ========================================================
     # SAVE ANALYSIS TO MONGODB (GRACEFUL FALLBACK)
     # ========================================================
+    now = datetime.now(timezone.utc)
     analysis_record = {
         "title": request.title.strip(),
         "text": request.text.strip(),
@@ -332,7 +382,9 @@ def analyze_news(request: NewsRequest):
         "risk_level": risk_level,
         "confidence": round(confidence, 2),
         "decision_score": round(decision_score, 4),
-        "created_at": datetime.now(timezone.utc)
+        "user_id": user_id,
+        "evidence": evidence_data,
+        "created_at": now
     }
 
     database_saved = False
@@ -358,6 +410,8 @@ def analyze_news(request: NewsRequest):
         "decision_score": round(decision_score, 4),
         "explanation": explanation,
         "recommendation": recommendation,
+        "evidence": evidence_data,
+        "user_id": user_id,
         "database_saved": database_saved,
         "disclaimer": (
             "TruthLens AI provides an automated assessment based on learned patterns from training data. "
