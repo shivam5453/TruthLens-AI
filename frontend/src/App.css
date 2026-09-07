@@ -1605,7 +1605,8 @@ a {
   border-left: 3px solid #f43f5e;
 }
 
-.evidence-item-card.status-neutral {
+.evidence-item-card.status-neutral,
+.evidence-item-card.status-related {
   border-left: 3px solid #3b82f6;
 }
 
@@ -1653,7 +1654,8 @@ a {
   color: var(--fake-text);
 }
 
-.ev-status-badge.neutral {
+.ev-status-badge.neutral,
+.ev-status-badge.related {
   background: var(--blue-bg);
   color: var(--blue-text);
 }
