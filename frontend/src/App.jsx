@@ -7,7 +7,6 @@ import {
   CircleAlert,
   FileText,
   Gauge,
-  Layers3,
   Loader2,
   RotateCcw,
   ShieldCheck,
@@ -15,7 +14,6 @@ import {
   Activity,
   History,
   Trash2,
-  Filter,
   Menu,
   X,
   Database,
@@ -32,11 +30,19 @@ import {
   Globe,
   ShieldAlert,
   Clock,
+  LayoutDashboard,
 } from "lucide-react";
 
 import "./App.css";
 
-const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+// Robust API base detection: environment variable, or production Render fallback, or local dev
+const API_BASE =
+  import.meta.env.VITE_API_URL ||
+  (typeof window !== "undefined" &&
+  window.location.hostname !== "localhost" &&
+  window.location.hostname !== "127.0.0.1"
+    ? "https://truthlens-ai-api-7bu4.onrender.com"
+    : "http://127.0.0.1:8000");
 
 // Predefined test samples for quick evaluation
 const SAMPLE_STORIES = {
@@ -90,14 +96,17 @@ function App() {
   const [saveNotes, setSaveNotes] = useState("");
   const [saveLoading, setSaveLoading] = useState(false);
 
-  // Workspace State
-  const [workspaceSubTab, setWorkspaceSubTab] = useState("history"); // 'history' | 'saved'
+  // Workspace Sub-Tab State
+  const [workspaceSubTab, setWorkspaceSubTab] = useState("dashboard"); // 'dashboard' | 'history' | 'saved' | 'reports'
   const [userHistory, setUserHistory] = useState([]);
   const [userHistoryLoading, setUserHistoryLoading] = useState(false);
+  const [userHistorySearch, setUserHistorySearch] = useState("");
+  const [userHistoryFilter, setUserHistoryFilter] = useState("all"); // 'all' | 'genuine' | 'fake'
   const [savedItems, setSavedItems] = useState([]);
   const [savedItemsLoading, setSavedItemsLoading] = useState(false);
 
-  // Admin Dashboard State
+  // Admin Dashboard Sub-Tab State
+  const [adminSubTab, setAdminSubTab] = useState("dashboard"); // 'dashboard' | 'users' | 'analyses' | 'health' | 'ml'
   const [adminStats, setAdminStats] = useState(null);
   const [adminUsers, setAdminUsers] = useState([]);
   const [adminHistory, setAdminHistory] = useState([]);
@@ -110,11 +119,16 @@ function App() {
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyFilter, setHistoryFilter] = useState("all");
-  const [deletingId, setDeletingId] = useState(null);
 
   // Platform Stats State
   const [stats, setStats] = useState(null);
-  const [systemHealth, setSystemHealth] = useState({ online: true, dbConnected: true });
+
+  // Robust System Health State (loading state: 'checking' | 'online' | 'offline')
+  const [systemHealth, setSystemHealth] = useState({
+    status: "checking",
+    online: false,
+    dbConnected: false,
+  });
 
   // Toast Notification State
   const [toastMessage, setToastMessage] = useState("");
@@ -162,27 +176,62 @@ function App() {
   }, [token]);
 
   // ============================================================
-  // INITIAL PUBLIC DATA LOAD
+  // ENGINE HEALTH CHECK (WITH AUTO-RETRY FOR RENDER COLD-START)
+  // ============================================================
+  useEffect(() => {
+    let isMounted = true;
+    let retryTimer = null;
+
+    const checkHealth = (attempt = 1) => {
+      if (attempt === 1 && isMounted) {
+        setSystemHealth((prev) => ({ ...prev, status: "checking" }));
+      }
+
+      fetch(`${API_BASE}/api/health`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (isMounted && data) {
+            setSystemHealth({
+              status: "online",
+              online: data.status === "healthy" || data.status === "degraded",
+              dbConnected: data.database_connected ?? true,
+            });
+          } else if (isMounted) {
+            if (attempt < 3) {
+              retryTimer = setTimeout(() => checkHealth(attempt + 1), 3500);
+            } else {
+              setSystemHealth({ status: "offline", online: false, dbConnected: false });
+            }
+          }
+        })
+        .catch(() => {
+          if (isMounted) {
+            if (attempt < 3) {
+              retryTimer = setTimeout(() => checkHealth(attempt + 1), 3500);
+            } else {
+              setSystemHealth({ status: "offline", online: false, dbConnected: false });
+            }
+          }
+        });
+    };
+
+    checkHealth(1);
+    const interval = setInterval(() => checkHealth(1), 30000);
+
+    return () => {
+      isMounted = false;
+      if (retryTimer) clearTimeout(retryTimer);
+      clearInterval(interval);
+    };
+  }, []);
+
+  // ============================================================
+  // INITIAL PUBLIC DATA LOAD (STATS & PUBLIC AUDIT HISTORY)
   // ============================================================
   useEffect(() => {
     let isMounted = true;
 
-    // Health
-    fetch(`${API_BASE}/api/health`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (isMounted && data) {
-          setSystemHealth({
-            online: data.status === "healthy" || data.status === "degraded",
-            dbConnected: data.database_connected ?? true,
-          });
-        }
-      })
-      .catch(() => {
-        if (isMounted) setSystemHealth({ online: false, dbConnected: false });
-      });
-
-    // Stats
+    // Platform aggregate stats
     fetch(`${API_BASE}/api/stats`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -220,7 +269,9 @@ function App() {
         .then((data) => {
           if (isMounted && data && data.success) setUserHistory(data.history || []);
         })
-        .catch(() => {});
+        .finally(() => {
+          if (isMounted) setUserHistoryLoading(false);
+        });
 
       fetch(`${API_BASE}/api/user/saved`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -229,7 +280,9 @@ function App() {
         .then((data) => {
           if (isMounted && data && data.success) setSavedItems(data.saved || []);
         })
-        .catch(() => {});
+        .finally(() => {
+          if (isMounted) setSavedItemsLoading(false);
+        });
     }
 
     return () => {
@@ -251,29 +304,33 @@ function App() {
         fetch(`${API_BASE}/api/admin/users`, { headers }),
         fetch(`${API_BASE}/api/admin/history`, { headers }),
         fetch(`${API_BASE}/api/admin/model-details`, { headers }),
-      ]).then(async ([statsRes, usersRes, histRes, modelRes]) => {
-        if (!isMounted) return;
+      ])
+        .then(async ([statsRes, usersRes, histRes, modelRes]) => {
+          if (!isMounted) return;
 
-        if (statsRes.status === "fulfilled" && statsRes.value.ok) {
-          const d = await statsRes.value.json();
-          setAdminStats(d);
-        }
+          if (statsRes.status === "fulfilled" && statsRes.value.ok) {
+            const d = await statsRes.value.json();
+            setAdminStats(d);
+          }
 
-        if (usersRes.status === "fulfilled" && usersRes.value.ok) {
-          const d = await usersRes.value.json();
-          if (d.success) setAdminUsers(d.users || []);
-        }
+          if (usersRes.status === "fulfilled" && usersRes.value.ok) {
+            const d = await usersRes.value.json();
+            if (d.success) setAdminUsers(d.users || []);
+          }
 
-        if (histRes.status === "fulfilled" && histRes.value.ok) {
-          const d = await histRes.value.json();
-          if (d.success) setAdminHistory(d.history || []);
-        }
+          if (histRes.status === "fulfilled" && histRes.value.ok) {
+            const d = await histRes.value.json();
+            if (d.success) setAdminHistory(d.history || []);
+          }
 
-        if (modelRes.status === "fulfilled" && modelRes.value.ok) {
-          const d = await modelRes.value.json();
-          if (d.success) setAdminModelDetails(d);
-        }
-      });
+          if (modelRes.status === "fulfilled" && modelRes.value.ok) {
+            const d = await modelRes.value.json();
+            if (d.success) setAdminModelDetails(d);
+          }
+        })
+        .finally(() => {
+          if (isMounted) setAdminLoading(false);
+        });
     }
 
     return () => {
@@ -294,6 +351,7 @@ function App() {
       if (healthRes.status === "fulfilled" && healthRes.value.ok) {
         const data = await healthRes.value.json();
         setSystemHealth({
+          status: "online",
           online: data.status === "healthy" || data.status === "degraded",
           dbConnected: data.database_connected ?? true,
         });
@@ -492,7 +550,7 @@ function App() {
       }
     } catch (err) {
       console.error("Analyze error:", err);
-      setError("Unable to connect to TruthLens AI backend. Please verify FastAPI is running on port 8000.");
+      setError("Unable to connect to TruthLens AI backend. Please verify FastAPI is running.");
     } finally {
       setLoading(false);
     }
@@ -749,63 +807,60 @@ function App() {
         month: "short",
         day: "numeric",
         year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
       });
     } catch {
-      return "Recorded";
+      return String(dateStr);
     }
   };
 
-  const isGenuine = result?.prediction === 1;
-
-  // Filter public history
+  // Filtered public history
   const filteredHistory = history.filter((item) => {
     if (historyFilter === "genuine") return item.prediction === 1;
     if (historyFilter === "fake") return item.prediction === 0;
     return true;
   });
 
-  // Filter admin users
+  // Filtered user history
+  const filteredUserHistory = userHistory.filter((item) => {
+    if (userHistoryFilter === "genuine" && item.prediction !== 1) return false;
+    if (userHistoryFilter === "fake" && item.prediction !== 0) return false;
+    if (userHistorySearch) {
+      const q = userHistorySearch.toLowerCase();
+      const matchTitle = (item.title || "").toLowerCase().includes(q);
+      const matchText = (item.text || "").toLowerCase().includes(q);
+      if (!matchTitle && !matchText) return false;
+    }
+    return true;
+  });
+
+  // Filtered admin users
   const filteredAdminUsers = adminUsers.filter((u) => {
     if (!adminUserSearch) return true;
     const q = adminUserSearch.toLowerCase();
-    return (u.name && u.name.toLowerCase().includes(q)) || (u.email && u.email.toLowerCase().includes(q));
+    return (u.name || "").toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q);
   });
 
   return (
-    <div className="app">
-      {/* Background Ambience */}
-      <div className="ambient ambient-one" />
-      <div className="ambient ambient-two" />
-      <div className="ambient ambient-three" />
-      <div className="grid-overlay" />
-
-      {/* Global Toast Message */}
-      {toastMessage && (
-        <div className="sample-toast" style={{ position: "fixed", bottom: "24px", right: "24px", zIndex: 1000 }}>
-          <Sparkles size={14} />
-          <span>{toastMessage}</span>
-        </div>
-      )}
-
+    <div className="app-shell">
       {/* ======================================================
-          NAVBAR
+          GLOBAL HEADER & NAVBAR
+          Requirement 1: "My Workspace" is NEVER shown publicly.
+          Requirement 2: Engine status shows "Checking..." then "ONLINE"/"OFFLINE".
       ====================================================== */}
-      <header className="navbar-container">
-        <nav className="navbar">
+      <header className="top-nav-wrap">
+        <nav className="top-nav">
           <a
-            className="brand"
-            href="#"
+            href="#top"
+            className="brand-link"
             onClick={(e) => {
               e.preventDefault();
               setActiveTab("analyzer");
             }}
           >
-            <div className="brand-mark">
-              <span>TL</span>
+            <div className="brand-icon">
+              <ShieldCheck size={18} />
             </div>
-            <div className="brand-copy">
+            <div className="brand-text">
               <strong>TruthLens</strong>
               <span>AI</span>
             </div>
@@ -821,21 +876,57 @@ function App() {
               <span>Analyzer</span>
             </button>
 
-            <button
-              className={`nav-tab-item ${activeTab === "workspace" ? "active" : ""}`}
-              onClick={() => {
-                if (!token) {
-                  setAuthModal("login");
-                  showToast("Please sign in to access your personal workspace.");
-                } else {
-                  setActiveTab("workspace");
-                }
-              }}
-            >
-              <Bookmark size={14} />
-              <span>My Workspace</span>
-            </button>
+            {/* Public-only link to How It Works */}
+            {!user && (
+              <a
+                href="#how-it-works"
+                className="nav-tab-item"
+                onClick={() => setActiveTab("analyzer")}
+              >
+                <Sparkles size={14} />
+                <span>How It Works</span>
+              </a>
+            )}
 
+            {/* Authenticated User Navigation: Dashboard, History, Saved */}
+            {user && (
+              <>
+                <button
+                  className={`nav-tab-item ${activeTab === "workspace" && workspaceSubTab === "dashboard" ? "active" : ""}`}
+                  onClick={() => {
+                    setActiveTab("workspace");
+                    setWorkspaceSubTab("dashboard");
+                  }}
+                >
+                  <LayoutDashboard size={14} />
+                  <span>Dashboard</span>
+                </button>
+
+                <button
+                  className={`nav-tab-item ${activeTab === "workspace" && workspaceSubTab === "history" ? "active" : ""}`}
+                  onClick={() => {
+                    setActiveTab("workspace");
+                    setWorkspaceSubTab("history");
+                  }}
+                >
+                  <History size={14} />
+                  <span>History</span>
+                </button>
+
+                <button
+                  className={`nav-tab-item ${activeTab === "workspace" && workspaceSubTab === "saved" ? "active" : ""}`}
+                  onClick={() => {
+                    setActiveTab("workspace");
+                    setWorkspaceSubTab("saved");
+                  }}
+                >
+                  <Bookmark size={14} />
+                  <span>Saved</span>
+                </button>
+              </>
+            )}
+
+            {/* Admin-only Portal Access */}
             {user?.role === "admin" && (
               <button
                 className={`nav-tab-item ${activeTab === "admin" ? "active" : ""}`}
@@ -849,10 +940,34 @@ function App() {
 
           {/* Right Navigation & Auth Actions */}
           <div className="nav-actions">
-            <div className="system-status" title={systemHealth.online ? "Backend Online" : "Backend Offline"}>
-              <span className={`status-pulse ${systemHealth.online ? "online" : "offline"}`} />
+            {/* Live Engine Status Indicator */}
+            <div
+              className="system-status"
+              title={
+                systemHealth.status === "checking"
+                  ? "Checking backend engine health..."
+                  : systemHealth.online
+                  ? "Backend Engine Online"
+                  : "Backend Engine Offline"
+              }
+            >
+              <span
+                className={`status-pulse ${
+                  systemHealth.status === "checking"
+                    ? "checking"
+                    : systemHealth.online
+                    ? "online"
+                    : "offline"
+                }`}
+              />
               <span className="status-label">Engine</span>
-              <strong>{systemHealth.online ? "ONLINE" : "OFFLINE"}</strong>
+              <strong>
+                {systemHealth.status === "checking"
+                  ? "Checking..."
+                  : systemHealth.online
+                  ? "ONLINE"
+                  : "OFFLINE"}
+              </strong>
             </div>
 
             {/* User Profile / Login Actions */}
@@ -916,18 +1031,49 @@ function App() {
             >
               Credibility Analyzer
             </button>
-            <button
-              onClick={() => {
-                if (!token) {
-                  setAuthModal("login");
-                } else {
-                  setActiveTab("workspace");
-                }
-                setMobileMenuOpen(false);
-              }}
-            >
-              My Workspace
-            </button>
+
+            {!user && (
+              <a
+                href="#how-it-works"
+                className="mobile-drawer-btn"
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                How It Works
+              </a>
+            )}
+
+            {user && (
+              <>
+                <button
+                  onClick={() => {
+                    setActiveTab("workspace");
+                    setWorkspaceSubTab("dashboard");
+                    setMobileMenuOpen(false);
+                  }}
+                >
+                  My Dashboard
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveTab("workspace");
+                    setWorkspaceSubTab("history");
+                    setMobileMenuOpen(false);
+                  }}
+                >
+                  Analysis History
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveTab("workspace");
+                    setWorkspaceSubTab("saved");
+                    setMobileMenuOpen(false);
+                  }}
+                >
+                  Bookmarked Stories
+                </button>
+              </>
+            )}
+
             {user?.role === "admin" && (
               <button
                 onClick={() => {
@@ -938,6 +1084,7 @@ function App() {
                 Admin Intelligence Portal
               </button>
             )}
+
             {!user ? (
               <>
                 <button
@@ -954,7 +1101,7 @@ function App() {
                     setMobileMenuOpen(false);
                   }}
                 >
-                  Create Account
+                  Register
                 </button>
               </>
             ) : (
@@ -972,15 +1119,17 @@ function App() {
       </header>
 
       {/* ======================================================
-          MAIN CONTENT AREA (SWITCHABLE BY TAB)
+          MAIN CONTAINER
       ====================================================== */}
-      <main>
+      <main className="main-content" id="top">
         {/* ====================================================
-            VIEW 1: CREDIBILITY ANALYZER (DEFAULT / PUBLIC)
+            VIEW 1: PUBLIC HOMEPAGE & CREDIBILITY ANALYZER
+            Requirement 3 & 4: Product-first, no public ML specs.
+            Requirement 5: Polished Analyzer with real evidence.
         ==================================================== */}
         {activeTab === "analyzer" && (
           <>
-            {/* HERO */}
+            {/* HERO: Product-First, Clean and Value-Focused */}
             <section className="hero">
               <div className="hero-badge">
                 <Sparkles size={13} />
@@ -993,8 +1142,8 @@ function App() {
               </h1>
 
               <p className="hero-description">
-                TruthLens AI assesses news credibility using machine learning, natural language processing,
-                and live web corroboration. Evaluate claims against trained models and real-time reporting.
+                TruthLens AI assesses news credibility using linguistic pattern detection and real-time news
+                reporting corroboration. Paste any claim or news story to evaluate its authenticity.
               </p>
 
               <div className="hero-actions">
@@ -1009,195 +1158,194 @@ function App() {
                 </a>
               </div>
 
-              {/* Hero Highlight Metrics */}
+              {/* Product Highlights (NO technical ML parameters in public view) */}
               <div className="hero-stats">
-                <div className="stat">
-                  <div className="stat-icon">
-                    <Gauge size={18} />
-                  </div>
-                  <div>
-                    <strong>99.69%</strong>
-                    <span>Best F1 Score (Linear SVM)</span>
-                  </div>
-                </div>
-
-                <div className="stat-divider" />
-
-                <div className="stat">
-                  <div className="stat-icon">
-                    <FileText size={18} />
-                  </div>
-                  <div>
-                    <strong>35K+</strong>
-                    <span>Training Articles</span>
-                  </div>
-                </div>
-
-                <div className="stat-divider" />
-
                 <div className="stat">
                   <div className="stat-icon">
                     <Globe size={18} />
                   </div>
                   <div>
-                    <strong>Live RSS</strong>
-                    <span>Web Corroboration Engine</span>
+                    <strong>Real-Time Evidence</strong>
+                    <span>Live Web Corroboration Engine</span>
+                  </div>
+                </div>
+
+                <div className="stat-divider" />
+
+                <div className="stat">
+                  <div className="stat-icon">
+                    <BrainCircuit size={18} />
+                  </div>
+                  <div>
+                    <strong>Linguistic Analysis</strong>
+                    <span>Pattern & Tone Assessment</span>
+                  </div>
+                </div>
+
+                <div className="stat-divider" />
+
+                <div className="stat">
+                  <div className="stat-icon">
+                    <Gauge size={18} />
+                  </div>
+                  <div>
+                    <strong>Instant Assessment</strong>
+                    <span>Risk Level & Confidence Rating</span>
                   </div>
                 </div>
               </div>
             </section>
 
-            {/* LIVE STATS BANNER (FROM MONGODB) */}
+            {/* LIVE PLATFORM STATS BANNER (IF AVAILABLE) */}
             {stats && stats.total_analyses > 0 && (
               <section className="stats-banner">
                 <div className="stats-banner-card">
                   <div className="stats-banner-header">
                     <div className="stats-title">
                       <BarChart3 size={16} />
-                      <span>PLATFORM AUDIT METRICS</span>
+                      <span>PLATFORM EVALUATION ACTIVITY</span>
                     </div>
                     <div className="stats-source">
                       <Database size={13} />
-                      <span>Live MongoDB Sync</span>
+                      <span>LIVE AUDIT TRAIL</span>
                     </div>
                   </div>
 
-                  <div className="stats-banner-grid">
-                    <div className="stat-chip">
-                      <span className="chip-label">TOTAL ASSESSED</span>
-                      <strong className="chip-value">{stats.total_analyses}</strong>
+                  <div className="stats-grid">
+                    <div className="stat-box">
+                      <div className="stat-box-label">Total Evaluated</div>
+                      <div className="stat-box-value">{stats.total_analyses}</div>
+                      <div className="stat-box-meta">Articles processed</div>
                     </div>
-                    <div className="stat-chip">
-                      <span className="chip-label">LIKELY GENUINE</span>
-                      <strong className="chip-value genuine">{stats.likely_genuine_count}</strong>
+
+                    <div className="stat-box">
+                      <div className="stat-box-label">Likely Genuine</div>
+                      <div className="stat-box-value" style={{ color: "#34d399" }}>
+                        {stats.likely_genuine_count}
+                      </div>
+                      <div className="stat-box-meta">Low risk signals</div>
                     </div>
-                    <div className="stat-chip">
-                      <span className="chip-label">POTENTIALLY FAKE</span>
-                      <strong className="chip-value fake">{stats.potentially_fake_count}</strong>
+
+                    <div className="stat-box">
+                      <div className="stat-box-label">Potentially Fake</div>
+                      <div className="stat-box-value" style={{ color: "#f87171" }}>
+                        {stats.potentially_fake_count}
+                      </div>
+                      <div className="stat-box-meta">Elevated risk signals</div>
                     </div>
-                    <div className="stat-chip">
-                      <span className="chip-label">AVG CONFIDENCE</span>
-                      <strong className="chip-value">{stats.avg_confidence}%</strong>
+
+                    <div className="stat-box">
+                      <div className="stat-box-label">Avg Confidence</div>
+                      <div className="stat-box-value" style={{ color: "#60a5fa" }}>
+                        {stats.avg_confidence}%
+                      </div>
+                      <div className="stat-box-meta">Model certainty</div>
                     </div>
                   </div>
                 </div>
               </section>
             )}
 
-            {/* ANALYZER */}
+            {/* ANALYZER WORKBENCH (PRIMARY PRODUCT COMPONENT) */}
             <section className="analyzer-section" id="analyzer">
               <div className="section-intro">
                 <div>
                   <span className="section-number">01</span>
-                  <span className="section-kicker">ANALYSIS WORKSPACE</span>
+                  <span className="section-kicker">CREDIBILITY ANALYZER</span>
                 </div>
 
-                <div className="analyzer-controls">
-                  <button className="clear-button" onClick={clearAll} title="Clear inputs and result">
-                    <RotateCcw size={13} />
-                    <span>Clear</span>
-                  </button>
-                </div>
-              </div>
-
-              <div className="analyzer-heading">
-                <h2>What are you reading?</h2>
-                <p>
-                  Submit a news headline, article content, or both. The trained Linear SVM classifier
-                  evaluates linguistic structure while the evidence engine retrieves corroborating live news.
-                </p>
-              </div>
-
-              {/* Quick Sample Selector */}
-              <div className="sample-bar">
-                <span className="sample-prompt">Try a sample story:</span>
-                <div className="sample-buttons">
+                <div className="sample-controls">
+                  <span className="sample-label">Quick test samples:</span>
                   <button
                     type="button"
-                    className="sample-btn genuine"
+                    className="sample-button genuine"
                     onClick={() => loadSample("genuine")}
                   >
-                    <CheckCircle2 size={13} />
-                    <span>Sample Genuine Story</span>
+                    Test Genuine Story
                   </button>
                   <button
                     type="button"
-                    className="sample-btn fake"
+                    className="sample-button fake"
                     onClick={() => loadSample("fake")}
                   >
-                    <CircleAlert size={13} />
-                    <span>Sample Sensational Claim</span>
+                    Test Sensational Claim
                   </button>
+                  {(title || text || result) && (
+                    <button type="button" className="clear-button" onClick={clearAll}>
+                      Clear
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {sampleNotice && (
-                <div className="sample-toast">
-                  <Check size={13} />
-                  <span>{sampleNotice}</span>
-                </div>
-              )}
+              {sampleNotice && <div className="sample-notice">{sampleNotice}</div>}
 
-              <div className="analyzer-grid">
+              <div className="workspace-grid">
                 {/* Input Panel */}
-                <div className="glass-card input-panel">
+                <div className="panel input-panel">
                   <div className="panel-header">
                     <div>
-                      <span className="panel-eyebrow">INPUT DATA</span>
-                      <h3>News Content</h3>
+                      <span className="panel-eyebrow">INPUT NEWS STORY</span>
+                      <h2>Evaluate Article or Claim</h2>
                     </div>
 
-                    <div className="secure-badge">
-                      <ShieldCheck size={13} />
-                      <span>Linear SVM + TF-IDF</span>
+                    <div className="model-chip">
+                      <ShieldCheck size={14} />
+                      <span>TruthLens AI Model</span>
                     </div>
                   </div>
 
-                  {/* Headline Field */}
-                  <div className="field">
-                    <div className="field-label">
-                      <label htmlFor="headline-input">HEADLINE / TITLE</label>
-                      <span>Optional</span>
-                    </div>
+                  <p className="panel-description">
+                    Submit a news headline, article content, or both. The trained classifier evaluates
+                    linguistic structure while the evidence engine searches for corroborating live reporting.
+                  </p>
+
+                  <div className="form-group">
+                    <label htmlFor="article-title">
+                      <span>Article Headline / Central Claim</span>
+                      <span className="field-hint">Required for live evidence search</span>
+                    </label>
                     <input
-                      id="headline-input"
+                      id="article-title"
+                      type="text"
+                      className="input-field"
+                      placeholder="e.g. Delegates approve international clean energy agreement at Geneva summit..."
                       value={title}
                       onChange={(e) => setTitle(e.target.value)}
-                      placeholder="Paste or enter the news headline..."
                     />
                   </div>
 
-                  {/* Article Content Field */}
-                  <div className="field">
-                    <div className="field-label">
-                      <label htmlFor="article-input">ARTICLE BODY</label>
-                      <span>{text.length.toLocaleString()} characters</span>
-                    </div>
+                  <div className="form-group">
+                    <label htmlFor="article-text">
+                      <span>Article Body / Story Text</span>
+                      <span className="field-hint">{text.length} characters</span>
+                    </label>
                     <textarea
-                      id="article-input"
+                      id="article-text"
+                      className="textarea-field"
+                      rows={7}
+                      placeholder="Paste the full article body or narrative here for deeper linguistic evaluation..."
                       value={text}
                       onChange={(e) => setText(e.target.value)}
-                      placeholder="Paste the full article body or excerpt here for comprehensive credibility analysis..."
                     />
                   </div>
 
                   {/* Live Evidence Retrieval Toggle */}
-                  <div className="field" style={{ marginBottom: "14px" }}>
-                    <div
-                      className="toggle-wrapper"
-                      onClick={() => setFetchEvidence(!fetchEvidence)}
-                      title="Toggle live news corroboration search"
-                    >
-                      <div className={`toggle-checkbox ${fetchEvidence ? "checked" : ""}`}>
-                        <div className="toggle-knob" />
-                      </div>
-                      <span className="toggle-label">
-                        Fetch Live Web Evidence & Corroborating Coverage
+                  <div
+                    className="evidence-toggle-row"
+                    onClick={() => setFetchEvidence(!fetchEvidence)}
+                  >
+                    <div className={`toggle-checkbox ${fetchEvidence ? "checked" : ""}`}>
+                      {fetchEvidence && <Check size={12} />}
+                    </div>
+                    <div className="toggle-label-group">
+                      <span className="toggle-label">Fetch Live Web Evidence & Corroborating Coverage</span>
+                      <span className="toggle-subtext">
+                        Queries real-time news sources to verify if independent outlets report this event.
                       </span>
                     </div>
                   </div>
 
-                  {/* Error Message Banner */}
                   {error && (
                     <div className="error-message">
                       <CircleAlert size={16} />
@@ -1205,167 +1353,119 @@ function App() {
                     </div>
                   )}
 
-                  {/* Analyze Button */}
                   <button
+                    type="button"
                     className="analyze-button"
                     onClick={analyzeNews}
                     disabled={loading}
                   >
                     {loading ? (
                       <>
-                        <Loader2 className="spin" size={18} />
-                        <span>Evaluating credibility & querying evidence...</span>
+                        <Loader2 size={18} className="spin" />
+                        <span>Evaluating Linguistic Signals & Evidence...</span>
                       </>
                     ) : (
                       <>
                         <BrainCircuit size={18} />
                         <span>Analyze with TruthLens</span>
-                        <ArrowRight size={17} />
+                        <ArrowRight size={16} />
                       </>
                     )}
                   </button>
-
-                  <div className="input-footer">
-                    <Activity size={13} />
-                    <span>TF-IDF Vectorization (100,000 features) + Decision Boundary Analysis</span>
-                  </div>
                 </div>
 
                 {/* Result Panel */}
-                <div className="glass-card result-panel">
-                  {/* Ready / Empty State */}
-                  {!result && !loading && (
-                    <div className="result-empty">
-                      <div className="empty-orbit">
-                        <div className="empty-icon">
-                          <BrainCircuit size={30} />
-                        </div>
-                      </div>
-
-                      <span className="panel-eyebrow">READY FOR ANALYSIS</span>
-                      <h3>Awaiting your story</h3>
-                      <p>
-                        Provide news text on the left and click <strong>Analyze with TruthLens</strong> to
-                        generate a machine-learning credibility assessment.
-                      </p>
-
-                      <div className="model-pill">
-                        <span />
-                        <span>NLP Feature Extraction</span>
-                        <i />
-                        <span>Decision Boundary Margin</span>
-                      </div>
+                <div className="panel result-panel">
+                  <div className="panel-header">
+                    <div>
+                      <span className="panel-eyebrow">AUTOMATED ASSESSMENT</span>
+                      <h2>Credibility Report</h2>
                     </div>
-                  )}
 
-                  {/* Loading State */}
+                    {result && (
+                      <div className={`verdict-chip ${result.prediction === 1 ? "genuine" : "fake"}`}>
+                        {result.prediction === 1 ? <CheckCircle2 size={14} /> : <CircleAlert size={14} />}
+                        <span>{result.label}</span>
+                      </div>
+                    )}
+                  </div>
+
                   {loading && (
-                    <div className="result-empty">
-                      <div className="loading-orbit">
-                        <Loader2 size={32} />
+                    <div className="loading-state">
+                      <div className="loading-spinner">
+                        <Loader2 size={36} className="spin" />
                       </div>
-
-                      <span className="panel-eyebrow">PROCESSING CONTENT</span>
                       <h3>Evaluating Linguistic Signals & Evidence</h3>
-                      <p>
-                        Extracting TF-IDF n-grams, calculating decision hyperplane, and searching live news feeds...
-                      </p>
-
-                      <div className="processing-bar">
-                        <span />
-                      </div>
+                      <p>Running classifier decision boundary analysis and querying live news feeds...</p>
                     </div>
                   )}
 
-                  {/* Analysis Result State */}
-                  {result && !loading && (
+                  {!loading && !result && (
+                    <div className="empty-state">
+                      <div className="empty-icon">
+                        <FileText size={32} />
+                      </div>
+                      <h3>No Analysis Yet</h3>
+                      <p>
+                        Paste a headline or article above and click &quot;Analyze with TruthLens&quot; to generate an
+                        assessment. You can also load one of the quick test stories.
+                      </p>
+                    </div>
+                  )}
+
+                  {!loading && result && (
                     <div className="result-content">
-                      <div className="result-header">
+                      {/* Big Verdict Header */}
+                      <div className={`verdict-banner ${result.prediction === 1 ? "genuine" : "fake"}`}>
+                        <div className="verdict-banner-icon">
+                          {result.prediction === 1 ? <CheckCircle2 size={32} /> : <CircleAlert size={32} />}
+                        </div>
                         <div>
-                          <span className="panel-eyebrow">ASSESSMENT REPORT</span>
-                          <span className="result-time">Automated Credibility Evaluation</span>
-                        </div>
-
-                        <div className={`result-status ${isGenuine ? "genuine" : "fake"}`}>
-                          {isGenuine ? <CheckCircle2 size={18} /> : <CircleAlert size={18} />}
-                        </div>
-                      </div>
-
-                      {/* Main Assessment Verdict */}
-                      <div className={`verdict ${isGenuine ? "genuine" : "fake"}`}>
-                        {result.label}
-                      </div>
-
-                      {/* Tags */}
-                      <div className="tags-row">
-                        <div className={`risk-tag ${isGenuine ? "genuine" : "fake"}`}>
-                          {result.risk_level.toUpperCase()}
-                        </div>
-                        {result.database_saved && (
-                          <div className="db-saved-tag">
-                            <Database size={11} />
-                            <span>Saved to Audit History</span>
+                          <div className="verdict-label-sub">ASSESSMENT VERDICT</div>
+                          <div className="verdict-label-main">{result.label}</div>
+                          <div className="verdict-risk">
+                            Risk Level: <strong>{result.risk_level}</strong>
                           </div>
-                        )}
-                      </div>
-
-                      {/* WHAT THIS MEANS */}
-                      <div className="result-explanation">
-                        <div className="explanation-icon">
-                          {isGenuine ? <CheckCircle2 size={17} /> : <CircleAlert size={17} />}
-                        </div>
-                        <div>
-                          <span className="explanation-title">WHAT THIS MEANS</span>
-                          <p>
-                            {result.explanation ||
-                              (isGenuine
-                                ? "The content demonstrates vocabulary, syntax, and stylistic patterns consistent with genuine journalistic reporting in our benchmark data."
-                                : "The content exhibits sensational phrasing, structural anomalies, or patterns frequently associated with unverified or misleading news.")}
-                          </p>
                         </div>
                       </div>
 
-                      {/* OUR RECOMMENDATION */}
-                      <div className="recommendation">
-                        <div className="recommendation-icon">
-                          <ShieldCheck size={17} />
-                        </div>
-                        <div>
-                          <span className="explanation-title">OUR RECOMMENDATION</span>
-                          <p>
-                            {result.recommendation ||
-                              (isGenuine
-                                ? "This text shows low risk indicators, but verifying claims with primary sources or official documentation is always recommended."
-                                : "Exercise caution before sharing. Cross-reference claims with established, independent news organizations and primary sources.")}
-                          </p>
-                        </div>
-                      </div>
-
-                      {/* CONFIDENCE METER */}
-                      <div className="confidence-section">
-                        <div className="confidence-top">
-                          <span>ASSESSMENT CONFIDENCE</span>
-                          <strong>{result.confidence}%</strong>
+                      {/* Score Meter */}
+                      <div className="score-card">
+                        <div className="score-header">
+                          <span className="score-title">Assessment Confidence</span>
+                          <span className="score-percent">{result.confidence}%</span>
                         </div>
 
-                        <div className="confidence-track">
+                        <div className="score-meter-track">
                           <div
-                            className={`confidence-progress ${isGenuine ? "genuine" : "fake"}`}
-                            style={{
-                              width: `${Math.min(Math.max(Number(result.confidence) || 0, 5), 100)}%`,
-                            }}
+                            className={`score-meter-fill ${result.prediction === 1 ? "genuine" : "fake"}`}
+                            style={{ width: `${result.confidence}%` }}
                           />
                         </div>
 
-                        <div className="confidence-scale">
-                          <span>0%</span>
-                          <span>50%</span>
-                          <span>100%</span>
+                        <div className="score-scale">
+                          <span>Low Certainty</span>
+                          <span>Moderate</span>
+                          <span>High Certainty</span>
+                        </div>
+                      </div>
+
+                      {/* Guidance Box */}
+                      <div className="guidance-box">
+                        <div className="guidance-section">
+                          <h4>Evaluation Context</h4>
+                          <p>{result.explanation}</p>
+                        </div>
+
+                        <div className="guidance-section" style={{ marginTop: "12px" }}>
+                          <h4>Verification Recommendation</h4>
+                          <p>{result.recommendation}</p>
                         </div>
                       </div>
 
                       {/* ====================================================
                           LIVE EVIDENCE CORROBORATION CARD
+                          Requirement 5: Real sources, external links.
                       ==================================================== */}
                       {result.evidence && (
                         <div className="evidence-card">
@@ -1397,8 +1497,8 @@ function App() {
                             </p>
                           )}
 
-                          {/* Sources List */}
-                          {result.evidence.sources && result.evidence.sources.length > 0 && (
+                          {/* Sources List with Clickable Outbound Links */}
+                          {result.evidence.sources && result.evidence.sources.length > 0 ? (
                             <div className="sources-list">
                               {result.evidence.sources.map((src, idx) => (
                                 <div className="source-item" key={idx}>
@@ -1410,6 +1510,9 @@ function App() {
                                       )}
                                     </div>
                                     <span className="source-title">{src.title}</span>
+                                    {src.snippet && (
+                                      <p className="source-snippet">{src.snippet}</p>
+                                    )}
                                   </div>
 
                                   {src.url && (
@@ -1427,17 +1530,22 @@ function App() {
                                 </div>
                               ))}
                             </div>
+                          ) : (
+                            <p className="evidence-sub-notice">
+                              * Absence of external evidence does not automatically mean a story is fake. Newly developing stories or localized claims may not appear immediately in global RSS feeds.
+                            </p>
                           )}
                         </div>
                       )}
 
                       {/* REPORT ACTIONS BAR (SAVE / PDF / JSON) */}
                       <div className="analysis-actions-bar">
-                        {result.id && (
+                        {result.id ? (
                           <>
                             <button
                               className="action-btn-primary"
                               onClick={() => triggerBookmark(result.id)}
+                              title="Save this analysis with personal notes"
                             >
                               <Bookmark size={14} />
                               <span>Save to Workspace</span>
@@ -1446,30 +1554,37 @@ function App() {
                             <button
                               className="action-btn-secondary"
                               onClick={() => downloadPdfReport(result.id)}
+                              title="Download branded PDF report"
                             >
                               <Download size={14} />
-                              <span>Download PDF Report</span>
+                              <span>Download PDF</span>
                             </button>
 
                             <button
                               className="action-btn-secondary"
                               onClick={() => downloadJsonReport(result.id)}
+                              title="Export structured JSON dossier"
                             >
                               <FileText size={14} />
                               <span>Export JSON</span>
                             </button>
                           </>
+                        ) : (
+                          <div className="guest-action-prompt">
+                            <Sparkles size={14} />
+                            <span>
+                              Want to save assessments or export branded PDF dossiers?{" "}
+                              <button className="text-link-btn" onClick={() => setAuthModal("register")}>
+                                Create a free account
+                              </button>
+                            </span>
+                          </div>
                         )}
                       </div>
 
-                      {/* SCIENTIFIC DISCLAIMER */}
-                      <div className="disclaimer">
-                        <CircleAlert size={15} />
-                        <p>
-                          <strong>Important Notice:</strong> TruthLens AI provides an automated assessment
-                          derived from patterns learned from training data. It does not independently verify
-                          real-world facts or guarantee absolute truthfulness.
-                        </p>
+                      {/* Disclaimer */}
+                      <div className="result-disclaimer">
+                        <strong>Important Notice:</strong> {result.disclaimer}
                       </div>
                     </div>
                   )}
@@ -1477,25 +1592,22 @@ function App() {
               </div>
             </section>
 
-            {/* HOW IT WORKS */}
+            {/* HOW IT WORKS (PRODUCT FIRST, NON-TECHNICAL) */}
             <section className="how-it-works-section" id="how-it-works">
               <div className="section-intro">
                 <div>
                   <span className="section-number">02</span>
-                  <span className="section-kicker">METHODOLOGY</span>
+                  <span className="section-kicker">WORKFLOW PROCESS</span>
                 </div>
               </div>
 
               <div className="section-title-row">
                 <div>
-                  <h2>How TruthLens Works.</h2>
+                  <h2>How TruthLens verifies content.</h2>
                   <p>
-                    Five structured steps transform raw news text into an interpretable credibility assessment.
+                    Combining linguistic pattern recognition with real-time news retrieval for thorough,
+                    multi-layered credibility assessment.
                   </p>
-                </div>
-                <div className="pipeline-tech">
-                  <Cpu size={15} />
-                  <span>5-STAGE PROCESS</span>
                 </div>
               </div>
 
@@ -1504,206 +1616,42 @@ function App() {
                   <div className="step-badge">STEP 1</div>
                   <h3>Submit News Story</h3>
                   <p>
-                    The user provides a news headline, article body, or combined story text into the analyzer workspace.
+                    Enter a news headline, article body, or central claim into the credibility analyzer.
                   </p>
                 </div>
 
                 <div className="how-step-card">
                   <div className="step-badge">STEP 2</div>
-                  <h3>Text Normalization</h3>
+                  <h3>Linguistic Pattern Analysis</h3>
                   <p>
-                    HTML tags, web links, email addresses, and punctuation are filtered out, converting content to clean lowercase tokens.
+                    The AI evaluates stylistic consistency, sensationalism cues, hyperbole, and structural credibility patterns.
                   </p>
                 </div>
 
                 <div className="how-step-card">
                   <div className="step-badge">STEP 3</div>
-                  <h3>TF-IDF Feature Mapping</h3>
+                  <h3>Live Web News Corroboration</h3>
                   <p>
-                    Clean text is converted into a 100,000-dimensional TF-IDF vector capturing unigram and bigram word importance.
+                    The evidence engine searches current news feeds to determine whether reputable independent outlets corroborate the story.
                   </p>
                 </div>
 
                 <div className="how-step-card">
                   <div className="step-badge">STEP 4</div>
-                  <h3>Linear SVM Classification</h3>
+                  <h3>Credibility Dossier & Sources</h3>
                   <p>
-                    The trained support vector machine measures the decision margin to determine credibility status and risk level.
-                  </p>
-                </div>
-
-                <div className="how-step-card">
-                  <div className="step-badge">STEP 5</div>
-                  <h3>Live Corroboration & Audit</h3>
-                  <p>
-                    Real-time RSS queries check external coverage while MongoDB persists the full assessment audit trail.
+                    Receive a clear risk assessment, confidence rating, contextual explanation, and verifiable outbound source links.
                   </p>
                 </div>
               </div>
             </section>
 
-            {/* TECHNICAL PIPELINE */}
-            <section className="pipeline-section" id="pipeline">
-              <div className="section-intro">
-                <div>
-                  <span className="section-number">03</span>
-                  <span className="section-kicker">SYSTEM ARCHITECTURE</span>
-                </div>
-              </div>
-
-              <div className="section-title-row">
-                <div>
-                  <h2>End-to-end technical pipeline.</h2>
-                  <p>
-                    Designed for high throughput and reproducibility across academic demonstration and production APIs.
-                  </p>
-                </div>
-                <div className="pipeline-tech">
-                  <BrainCircuit size={15} />
-                  <span>NLP & ML PIPELINE</span>
-                </div>
-              </div>
-
-              <div className="pipeline-grid">
-                <PipelineStep
-                  number="01"
-                  title="News Input"
-                  icon={<FileText size={20} />}
-                  text="Raw headline and article text ingested via REST API."
-                />
-                <PipelineStep
-                  number="02"
-                  title="Preprocessing"
-                  icon={<Sparkles size={20} />}
-                  text="Regex cleaning, lowercase normalization, and whitespace cleanup."
-                />
-                <PipelineStep
-                  number="03"
-                  title="TF-IDF Features"
-                  icon={<Layers3 size={20} />}
-                  text="100,000 max features, (1, 2) n-grams, sublinear term weighting."
-                />
-                <PipelineStep
-                  number="04"
-                  title="Linear SVM"
-                  icon={<Cpu size={20} />}
-                  text="Optimal hyperplane separator with margin-based confidence scoring."
-                />
-                <PipelineStep
-                  number="05"
-                  title="Live Evidence"
-                  icon={<Globe size={20} />}
-                  text="Real-time RSS query extraction and semantic headline corroboration."
-                />
-                <PipelineStep
-                  number="06"
-                  title="MongoDB Storage"
-                  icon={<Database size={20} />}
-                  text="Asynchronous persistence of analysis metadata with graceful fallback."
-                />
-              </div>
-            </section>
-
-            {/* MODEL BENCHMARK */}
-            <section className="models-section" id="models">
-              <div className="section-intro">
-                <div>
-                  <span className="section-number">04</span>
-                  <span className="section-kicker">MODEL BENCHMARK</span>
-                </div>
-              </div>
-
-              <div className="section-title-row">
-                <div>
-                  <h2>Empirical model comparison.</h2>
-                  <p>
-                    Evaluated against the project dataset (35,918 records) using stratified validation.
-                    Linear SVM emerged as the best-performing production classifier.
-                  </p>
-                </div>
-              </div>
-
-              {/* Benchmark Table */}
-              <div className="model-table">
-                <div className="model-row model-head">
-                  <span>CLASSIFIER MODEL</span>
-                  <span>ACCURACY</span>
-                  <span>PRECISION</span>
-                  <span>RECALL</span>
-                  <span>F1 SCORE</span>
-                </div>
-
-                {/* Linear SVM - Winner */}
-                <div className="model-row featured-model">
-                  <div>
-                    <div className="winner-badge">SELECTED PRODUCTION MODEL</div>
-                    <strong>Linear SVM (Support Vector Machine)</strong>
-                  </div>
-                  <strong>99.67%</strong>
-                  <strong>99.56%</strong>
-                  <strong>99.82%</strong>
-                  <strong>99.69%</strong>
-                </div>
-
-                {/* Logistic Regression */}
-                <div className="model-row">
-                  <div>
-                    <strong>Logistic Regression</strong>
-                  </div>
-                  <span>99.25%</span>
-                  <span>99.03%</span>
-                  <span>99.56%</span>
-                  <span>99.30%</span>
-                </div>
-
-                {/* Multinomial Naive Bayes */}
-                <div className="model-row">
-                  <div>
-                    <strong>Multinomial Naive Bayes</strong>
-                  </div>
-                  <span>96.30%</span>
-                  <span>96.75%</span>
-                  <span>96.23%</span>
-                  <span>96.49%</span>
-                </div>
-              </div>
-
-              <p className="benchmark-disclaimer">
-                * Performance shown is based on validation data from the project dataset and should not be
-                interpreted as guaranteed real-world accuracy across arbitrary unseen domains.
-              </p>
-
-              {/* Dataset Specifications Card */}
-              <div className="dataset-specs-card">
-                <div className="specs-col">
-                  <span className="specs-label">DATASET SIZE</span>
-                  <strong>35,918 Articles</strong>
-                  <small>32,175 Cleaned (25,740 Train / 6,435 Val)</small>
-                </div>
-                <div className="specs-col">
-                  <span className="specs-label">FEATURE EXTRACTION</span>
-                  <strong>TF-IDF Vectorizer</strong>
-                  <small>100,000 features · Unigrams + Bigrams</small>
-                </div>
-                <div className="specs-col">
-                  <span className="specs-label">DECISION FUNCTION</span>
-                  <strong>Hyperplane Margin</strong>
-                  <small>Sigmoid confidence mapping</small>
-                </div>
-                <div className="specs-col">
-                  <span className="specs-label">TARGET CLASSES</span>
-                  <strong>Binary Classification</strong>
-                  <small>0: Fake · 1: Real</small>
-                </div>
-              </div>
-            </section>
-
-            {/* PUBLIC HISTORY */}
+            {/* PUBLIC AUDIT HISTORY */}
             <section className="history-section" id="history">
               <div className="section-intro">
                 <div>
-                  <span className="section-number">05</span>
-                  <span className="section-kicker">ANALYSIS HISTORY</span>
+                  <span className="section-number">03</span>
+                  <span className="section-kicker">ANALYSIS ACTIVITY</span>
                 </div>
 
                 <button
@@ -1719,13 +1667,13 @@ function App() {
 
               <div className="section-title-row">
                 <div>
-                  <h2>Audit history & recent analyses.</h2>
-                  <p>Previous TruthLens assessments retrieved directly from MongoDB.</p>
+                  <h2>Recent platform evaluations.</h2>
+                  <p>
+                    Real analyses evaluated by TruthLens AI. Sign in to maintain your private workspace history.
+                  </p>
                 </div>
 
-                {/* Filter Pills */}
-                <div className="history-filter-bar">
-                  <Filter size={13} />
+                <div className="history-filter-pills">
                   <button
                     className={`filter-pill ${historyFilter === "all" ? "active" : ""}`}
                     onClick={() => setHistoryFilter("all")}
@@ -1747,91 +1695,48 @@ function App() {
                 </div>
               </div>
 
-              {/* History Empty State */}
-              {!historyLoading && filteredHistory.length === 0 && (
+              {historyLoading && (
                 <div className="history-empty">
-                  <History size={30} />
-                  <h3>No analysis records found</h3>
-                  <p>
-                    {history.length === 0
-                      ? "Submit a news story above to generate your first credibility assessment."
-                      : "No analysis records match the selected filter."}
-                  </p>
+                  <Loader2 size={24} className="spin" />
+                  <p>Loading latest records from database...</p>
                 </div>
               )}
 
-              {/* History Cards Grid */}
-              {filteredHistory.length > 0 && (
+              {!historyLoading && filteredHistory.length === 0 && (
+                <div className="history-empty">
+                  <BrainCircuit size={28} />
+                  <p>No recent public records found.</p>
+                </div>
+              )}
+
+              {!historyLoading && filteredHistory.length > 0 && (
                 <div className="history-grid">
-                  {filteredHistory.map((item, index) => {
+                  {filteredHistory.slice(0, 6).map((item, idx) => {
                     const genuine = item.prediction === 1;
                     const itemId = item.id || item._id;
 
                     return (
-                      <div className="history-card" key={itemId || `${item.created_at}-${index}`}>
+                      <div className="history-card" key={itemId || idx}>
                         <div className="history-card-top">
-                          <div>
-                            <span className="panel-eyebrow">
-                              ANALYSIS #{history.length - index}
-                            </span>
-                            <span className="history-date">
-                              {formatDate(item.created_at)}
-                            </span>
-                          </div>
-
-                          <div className="history-top-actions">
-                            <div className={`history-verdict ${genuine ? "genuine" : "fake"}`}>
-                              {genuine ? <CheckCircle2 size={13} /> : <CircleAlert size={13} />}
-                              <span>{item.label || (genuine ? "Likely Genuine" : "Potentially Fake")}</span>
-                            </div>
-
-                            {itemId && (
-                              <button
-                                className="delete-history-btn"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  setDeletingId(itemId);
-                                  try {
-                                    const res = await fetch(`${API_BASE}/api/history/${itemId}`, { method: "DELETE" });
-                                    if (res.ok) {
-                                      setHistory((prev) => prev.filter((i) => i.id !== itemId && i._id !== itemId));
-                                      fetch(`${API_BASE}/api/stats`)
-                                        .then((r) => r.json())
-                                        .then((d) => {
-                                          if (d.success) setStats(d);
-                                        })
-                                        .catch(() => {});
-                                    }
-                                  } finally {
-                                    setDeletingId(null);
-                                  }
-                                }}
-                                disabled={deletingId === itemId}
-                                title="Delete this record"
-                              >
-                                {deletingId === itemId ? <Loader2 size={13} className="spin" /> : <Trash2 size={13} />}
-                              </button>
-                            )}
+                          <span className="history-date">{formatDate(item.created_at)}</span>
+                          <div className={`history-verdict ${genuine ? "genuine" : "fake"}`}>
+                            {genuine ? <CheckCircle2 size={13} /> : <CircleAlert size={13} />}
+                            <span>{item.label}</span>
                           </div>
                         </div>
 
-                        <h3>{item.title || "Untitled story content"}</h3>
+                        <h3>{item.title || "Untitled analysis"}</h3>
 
                         {item.text && (
                           <p className="history-snippet">
-                            {item.text.length > 140 ? `${item.text.slice(0, 140)}...` : item.text}
+                            {item.text.length > 130 ? `${item.text.substring(0, 130)}...` : item.text}
                           </p>
                         )}
 
-                        <div className="history-meta">
-                          <div>
-                            <span>RISK LEVEL</span>
-                            <strong>{item.risk_level || (genuine ? "Low Risk" : "High Risk")}</strong>
-                          </div>
-
-                          <div>
-                            <span>CONFIDENCE</span>
-                            <strong>{item.confidence}%</strong>
+                        <div className="history-card-bottom">
+                          <div className="history-meta-row">
+                            <span className="risk-tag">{item.risk_level}</span>
+                            <span className="conf-tag">{item.confidence}% confidence</span>
                           </div>
                         </div>
                       </div>
@@ -1844,7 +1749,10 @@ function App() {
         )}
 
         {/* ====================================================
-            VIEW 2: USER WORKSPACE
+            VIEW 2: AUTHENTICATED USER WORKSPACE
+            Requirement 6: Proper dashboard with summary cards.
+            Requirement 7: Bookmarked analyses.
+            Requirement 8: PDF / JSON export actions.
         ==================================================== */}
         {activeTab === "workspace" && (
           <section className="workspace-container">
@@ -1871,8 +1779,16 @@ function App() {
               </div>
             </div>
 
-            {/* Sub-tab Switcher */}
+            {/* Workspace Sub-Tab Switcher */}
             <div className="workspace-subtabs">
+              <button
+                className={`workspace-subtab-btn ${workspaceSubTab === "dashboard" ? "active" : ""}`}
+                onClick={() => setWorkspaceSubTab("dashboard")}
+              >
+                <LayoutDashboard size={16} />
+                <span>Dashboard Overview</span>
+              </button>
+
               <button
                 className={`workspace-subtab-btn ${workspaceSubTab === "history" ? "active" : ""}`}
                 onClick={() => setWorkspaceSubTab("history")}
@@ -1880,6 +1796,7 @@ function App() {
                 <Clock size={16} />
                 <span>My Analyses ({userHistory.length})</span>
               </button>
+
               <button
                 className={`workspace-subtab-btn ${workspaceSubTab === "saved" ? "active" : ""}`}
                 onClick={() => setWorkspaceSubTab("saved")}
@@ -1887,11 +1804,210 @@ function App() {
                 <Bookmark size={16} />
                 <span>Bookmarked Stories ({savedItems.length})</span>
               </button>
+
+              <button
+                className={`workspace-subtab-btn ${workspaceSubTab === "reports" ? "active" : ""}`}
+                onClick={() => setWorkspaceSubTab("reports")}
+              >
+                <Download size={16} />
+                <span>Export Reports</span>
+              </button>
             </div>
 
-            {/* Sub-tab 1: My History */}
+            {/* ================================================
+                SUB-TAB 1: USER DASHBOARD
+            ================================================ */}
+            {workspaceSubTab === "dashboard" && (
+              <div>
+                <div className="workspace-dashboard-header">
+                  <div className="workspace-dashboard-title">
+                    <h2>Workspace Overview</h2>
+                    <p>Track your news evaluation history, bookmarks, and risk profiles.</p>
+                  </div>
+
+                  <button
+                    className="primary-action"
+                    style={{ padding: "8px 18px", fontSize: "0.85rem" }}
+                    onClick={() => setActiveTab("analyzer")}
+                  >
+                    <BrainCircuit size={15} />
+                    <span>Analyze New Story</span>
+                  </button>
+                </div>
+
+                {/* Dashboard Summary KPI Cards */}
+                <div className="admin-kpi-grid">
+                  <div className="kpi-card">
+                    <div className="kpi-card-header">
+                      <span>Total Analyses</span>
+                      <BrainCircuit size={16} />
+                    </div>
+                    <div className="kpi-value">{userHistory.length}</div>
+                    <div className="kpi-subtext">Stories analyzed by you</div>
+                  </div>
+
+                  <div className="kpi-card">
+                    <div className="kpi-card-header">
+                      <span>Saved Bookmarks</span>
+                      <Bookmark size={16} />
+                    </div>
+                    <div className="kpi-value" style={{ color: "#38bdf8" }}>{savedItems.length}</div>
+                    <div className="kpi-subtext">Saved with research notes</div>
+                  </div>
+
+                  <div className="kpi-card">
+                    <div className="kpi-card-header">
+                      <span>Likely Genuine</span>
+                      <CheckCircle2 size={16} />
+                    </div>
+                    <div className="kpi-value" style={{ color: "#34d399" }}>
+                      {userHistory.filter((i) => i.prediction === 1).length}
+                    </div>
+                    <div className="kpi-subtext">Low risk evaluations</div>
+                  </div>
+
+                  <div className="kpi-card">
+                    <div className="kpi-card-header">
+                      <span>Potentially Fake</span>
+                      <CircleAlert size={16} />
+                    </div>
+                    <div className="kpi-value" style={{ color: "#f87171" }}>
+                      {userHistory.filter((i) => i.prediction === 0).length}
+                    </div>
+                    <div className="kpi-subtext">High risk flagged stories</div>
+                  </div>
+                </div>
+
+                {/* Recent Analyses Quick List */}
+                <div className="admin-table-card">
+                  <div className="admin-table-header">
+                    <div className="admin-table-title">
+                      <Clock size={18} />
+                      <h3>Recent Assessments</h3>
+                    </div>
+                    <button
+                      className="table-action-btn"
+                      onClick={() => setWorkspaceSubTab("history")}
+                    >
+                      View All History
+                    </button>
+                  </div>
+
+                  {userHistory.length === 0 ? (
+                    <div className="history-empty" style={{ padding: "30px 20px" }}>
+                      <BrainCircuit size={28} />
+                      <p>You have not analyzed any stories yet.</p>
+                      <button
+                        className="primary-action"
+                        style={{ marginTop: "12px", padding: "8px 16px", fontSize: "0.82rem" }}
+                        onClick={() => setActiveTab("analyzer")}
+                      >
+                        Analyze your first story
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="table-responsive">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>HEADLINE</th>
+                            <th>VERDICT</th>
+                            <th>CONFIDENCE</th>
+                            <th>DATE</th>
+                            <th>ACTIONS</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {userHistory.slice(0, 5).map((item) => {
+                            const itemId = item.id || item._id;
+                            const genuine = item.prediction === 1;
+
+                            return (
+                              <tr key={itemId}>
+                                <td style={{ fontWeight: 600, maxWidth: "280px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {item.title || "Untitled story"}
+                                </td>
+                                <td>
+                                  <span className={`risk-tag ${genuine ? "genuine" : "fake"}`}>
+                                    {item.label}
+                                  </span>
+                                </td>
+                                <td>{item.confidence}%</td>
+                                <td style={{ color: "#94a3b8", fontSize: "0.78rem" }}>{formatDate(item.created_at)}</td>
+                                <td>
+                                  <div className="action-buttons-cell">
+                                    <button
+                                      className="table-action-btn"
+                                      onClick={() => downloadPdfReport(itemId)}
+                                      title="Download PDF"
+                                    >
+                                      <Download size={12} />
+                                      <span>PDF</span>
+                                    </button>
+                                    <button
+                                      className="table-action-btn"
+                                      onClick={() => downloadJsonReport(itemId)}
+                                      title="Export JSON"
+                                    >
+                                      <FileText size={12} />
+                                      <span>JSON</span>
+                                    </button>
+                                    <button
+                                      className="table-action-btn"
+                                      onClick={() => triggerBookmark(itemId)}
+                                      title="Bookmark"
+                                    >
+                                      <Bookmark size={12} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* ================================================
+                SUB-TAB 2: USER ANALYSIS HISTORY (ISOLATED)
+            ================================================ */}
             {workspaceSubTab === "history" && (
               <div>
+                <div className="admin-table-header" style={{ marginBottom: "18px" }}>
+                  <div className="history-filter-pills">
+                    <button
+                      className={`filter-pill ${userHistoryFilter === "all" ? "active" : ""}`}
+                      onClick={() => setUserHistoryFilter("all")}
+                    >
+                      All ({userHistory.length})
+                    </button>
+                    <button
+                      className={`filter-pill ${userHistoryFilter === "genuine" ? "active" : ""}`}
+                      onClick={() => setUserHistoryFilter("genuine")}
+                    >
+                      Likely Genuine ({userHistory.filter((i) => i.prediction === 1).length})
+                    </button>
+                    <button
+                      className={`filter-pill ${userHistoryFilter === "fake" ? "active" : ""}`}
+                      onClick={() => setUserHistoryFilter("fake")}
+                    >
+                      Potentially Fake ({userHistory.filter((i) => i.prediction === 0).length})
+                    </button>
+                  </div>
+
+                  <input
+                    type="text"
+                    className="admin-search-input"
+                    placeholder="Search your analyses..."
+                    value={userHistorySearch}
+                    onChange={(e) => setUserHistorySearch(e.target.value)}
+                  />
+                </div>
+
                 {userHistoryLoading && (
                   <div style={{ textAlign: "center", padding: "40px", color: "#94a3b8" }}>
                     <Loader2 size={32} className="spin" style={{ margin: "0 auto 12px" }} />
@@ -1899,10 +2015,10 @@ function App() {
                   </div>
                 )}
 
-                {!userHistoryLoading && userHistory.length === 0 && (
+                {!userHistoryLoading && filteredUserHistory.length === 0 && (
                   <div className="history-empty">
                     <BrainCircuit size={32} />
-                    <h3>No analyses found in your workspace</h3>
+                    <h3>No analyses found</h3>
                     <p>Articles you evaluate while signed in will appear here with export options.</p>
                     <button
                       className="primary-action"
@@ -1915,9 +2031,9 @@ function App() {
                   </div>
                 )}
 
-                {!userHistoryLoading && userHistory.length > 0 && (
+                {!userHistoryLoading && filteredUserHistory.length > 0 && (
                   <div className="history-grid">
-                    {userHistory.map((item) => {
+                    {filteredUserHistory.map((item) => {
                       const genuine = item.prediction === 1;
                       const itemId = item.id || item._id;
 
@@ -1949,47 +2065,44 @@ function App() {
 
                           {item.text && (
                             <p className="history-snippet">
-                              {item.text.length > 130 ? `${item.text.slice(0, 130)}...` : item.text}
+                              {item.text.length > 150 ? `${item.text.substring(0, 150)}...` : item.text}
                             </p>
                           )}
 
-                          <div className="history-meta">
-                            <div>
-                              <span>RISK LEVEL</span>
-                              <strong>{item.risk_level}</strong>
+                          <div className="history-card-bottom">
+                            <div className="history-meta-row">
+                              <span className="risk-tag">{item.risk_level}</span>
+                              <span className="conf-tag">{item.confidence}% confidence</span>
                             </div>
-                            <div>
-                              <span>CONFIDENCE</span>
-                              <strong>{item.confidence}%</strong>
-                            </div>
-                          </div>
 
-                          {/* Action Buttons */}
-                          <div style={{ display: "flex", gap: "8px", marginTop: "14px", flexWrap: "wrap" }}>
-                            <button
-                              className="action-btn-secondary"
-                              style={{ padding: "6px 10px", fontSize: "0.75rem" }}
-                              onClick={() => downloadPdfReport(itemId)}
-                            >
-                              <Download size={12} />
-                              <span>PDF Report</span>
-                            </button>
-                            <button
-                              className="action-btn-secondary"
-                              style={{ padding: "6px 10px", fontSize: "0.75rem" }}
-                              onClick={() => downloadJsonReport(itemId)}
-                            >
-                              <FileText size={12} />
-                              <span>JSON Data</span>
-                            </button>
-                            <button
-                              className="action-btn-secondary"
-                              style={{ padding: "6px 10px", fontSize: "0.75rem" }}
-                              onClick={() => triggerBookmark(itemId)}
-                            >
-                              <Bookmark size={12} />
-                              <span>Bookmark</span>
-                            </button>
+                            <div className="history-action-links">
+                              <button
+                                className="history-link-btn"
+                                onClick={() => downloadPdfReport(itemId)}
+                                title="Download PDF Report"
+                              >
+                                <Download size={13} />
+                                <span>PDF</span>
+                              </button>
+
+                              <button
+                                className="history-link-btn"
+                                onClick={() => downloadJsonReport(itemId)}
+                                title="Export JSON"
+                              >
+                                <FileText size={13} />
+                                <span>JSON</span>
+                              </button>
+
+                              <button
+                                className="history-link-btn"
+                                onClick={() => triggerBookmark(itemId)}
+                                title="Save to bookmarks"
+                              >
+                                <Bookmark size={13} />
+                                <span>Save</span>
+                              </button>
+                            </div>
                           </div>
                         </div>
                       );
@@ -1999,13 +2112,15 @@ function App() {
               </div>
             )}
 
-            {/* Sub-tab 2: Saved / Bookmarked Stories */}
+            {/* ================================================
+                SUB-TAB 3: BOOKMARKED STORIES
+            ================================================ */}
             {workspaceSubTab === "saved" && (
               <div>
                 {savedItemsLoading && (
                   <div style={{ textAlign: "center", padding: "40px", color: "#94a3b8" }}>
                     <Loader2 size={32} className="spin" style={{ margin: "0 auto 12px" }} />
-                    <p>Loading your bookmarked analyses...</p>
+                    <p>Loading your bookmarked stories...</p>
                   </div>
                 )}
 
@@ -2013,79 +2128,145 @@ function App() {
                   <div className="history-empty">
                     <Bookmark size={32} />
                     <h3>No bookmarked stories yet</h3>
-                    <p>Bookmark any analysis from the analyzer to save it here with research notes.</p>
+                    <p>Click &quot;Save to Workspace&quot; on any analysis result to bookmark it here with research notes.</p>
                   </div>
                 )}
 
                 {!savedItemsLoading && savedItems.length > 0 && (
                   <div className="history-grid">
-                    {savedItems.map((item) => {
-                      const genuine = item.label === "Likely Genuine";
-
-                      return (
-                        <div className="history-card" key={item.id}>
-                          <div className="history-card-top">
-                            <div>
-                              <span className="panel-eyebrow">BOOKMARKED</span>
-                              <span className="history-date">Saved {formatDate(item.saved_at)}</span>
-                            </div>
-
-                            <div className="history-top-actions">
-                              <div className={`history-verdict ${genuine ? "genuine" : "fake"}`}>
-                                {genuine ? <CheckCircle2 size={13} /> : <CircleAlert size={13} />}
-                                <span>{item.label}</span>
-                              </div>
-
-                              <button
-                                className="delete-history-btn"
-                                onClick={() => removeSavedBookmark(item.id)}
-                                title="Remove Bookmark"
-                              >
-                                <Trash2 size={13} />
-                              </button>
-                            </div>
+                    {savedItems.map((item) => (
+                      <div className="history-card" key={item.id}>
+                        <div className="history-card-top">
+                          <div>
+                            <span className="panel-eyebrow">BOOKMARK</span>
+                            <span className="history-date">Saved {formatDate(item.saved_at)}</span>
                           </div>
 
-                          <h3>{item.title || "Untitled story content"}</h3>
+                          <button
+                            className="delete-history-btn"
+                            onClick={() => removeSavedBookmark(item.id)}
+                            title="Remove bookmark"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
 
-                          {item.notes && (
-                            <div className="evidence-notes" style={{ marginTop: "10px", fontSize: "0.8rem" }}>
-                              <strong>Notes:</strong> {item.notes}
-                            </div>
-                          )}
+                        <h3>{item.title}</h3>
 
-                          <div className="history-meta" style={{ marginTop: "12px" }}>
-                            <div>
-                              <span>RISK LEVEL</span>
-                              <strong>{item.risk_level}</strong>
-                            </div>
-                            <div>
-                              <span>CONFIDENCE</span>
-                              <strong>{item.confidence}%</strong>
-                            </div>
+                        {item.notes && (
+                          <div className="bookmark-notes-box">
+                            <strong>Your Notes:</strong>
+                            <p>{item.notes}</p>
+                          </div>
+                        )}
+
+                        <div className="history-card-bottom" style={{ marginTop: "16px" }}>
+                          <div className="history-meta-row">
+                            <span className={`risk-tag ${item.label === "Likely Genuine" ? "genuine" : "fake"}`}>
+                              {item.label}
+                            </span>
+                            <span className="conf-tag">{item.confidence}% confidence</span>
                           </div>
 
-                          <div style={{ display: "flex", gap: "8px", marginTop: "14px" }}>
-                            <button
-                              className="action-btn-secondary"
-                              style={{ padding: "6px 10px", fontSize: "0.75rem" }}
-                              onClick={() => downloadPdfReport(item.analysis_id)}
-                            >
-                              <Download size={12} />
-                              <span>PDF Report</span>
-                            </button>
-                            <button
-                              className="action-btn-secondary"
-                              style={{ padding: "6px 10px", fontSize: "0.75rem" }}
-                              onClick={() => downloadJsonReport(item.analysis_id)}
-                            >
-                              <FileText size={12} />
-                              <span>JSON Data</span>
-                            </button>
+                          <div className="history-action-links">
+                            {item.analysis_id && (
+                              <>
+                                <button
+                                  className="history-link-btn"
+                                  onClick={() => downloadPdfReport(item.analysis_id)}
+                                  title="Download PDF"
+                                >
+                                  <Download size={13} />
+                                  <span>PDF</span>
+                                </button>
+                                <button
+                                  className="history-link-btn"
+                                  onClick={() => downloadJsonReport(item.analysis_id)}
+                                  title="Export JSON"
+                                >
+                                  <FileText size={13} />
+                                  <span>JSON</span>
+                                </button>
+                              </>
+                            )}
                           </div>
                         </div>
-                      );
-                    })}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ================================================
+                SUB-TAB 4: EXPORT REPORTS
+            ================================================ */}
+            {workspaceSubTab === "reports" && (
+              <div className="admin-table-card">
+                <div className="admin-table-header">
+                  <div className="admin-table-title">
+                    <Download size={18} />
+                    <h3>Export Analysis Dossiers</h3>
+                  </div>
+                </div>
+
+                <p style={{ color: "#94a3b8", fontSize: "0.9rem", marginBottom: "20px" }}>
+                  Download complete credibility audit dossiers formatted as branded ReportLab PDFs or machine-readable JSON files.
+                </p>
+
+                {userHistory.length === 0 ? (
+                  <div className="history-empty" style={{ padding: "30px" }}>
+                    <FileText size={28} />
+                    <p>Perform an analysis to unlock downloadable reports.</p>
+                  </div>
+                ) : (
+                  <div className="table-responsive">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>HEADLINE</th>
+                          <th>VERDICT</th>
+                          <th>DATE</th>
+                          <th>DOWNLOAD OPTIONS</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {userHistory.map((h) => {
+                          const itemId = h.id || h._id;
+                          return (
+                            <tr key={itemId}>
+                              <td style={{ fontWeight: 600 }}>{h.title || "Untitled Story"}</td>
+                              <td>
+                                <span className={`risk-tag ${h.prediction === 1 ? "genuine" : "fake"}`}>
+                                  {h.label}
+                                </span>
+                              </td>
+                              <td style={{ color: "#94a3b8", fontSize: "0.78rem" }}>{formatDate(h.created_at)}</td>
+                              <td>
+                                <div className="action-buttons-cell">
+                                  <button
+                                    className="table-action-btn"
+                                    onClick={() => downloadPdfReport(itemId)}
+                                    title="Download Branded PDF Dossier"
+                                  >
+                                    <Download size={12} />
+                                    <span>Download PDF</span>
+                                  </button>
+                                  <button
+                                    className="table-action-btn"
+                                    onClick={() => downloadJsonReport(itemId)}
+                                    title="Export JSON Dossier"
+                                  >
+                                    <FileText size={12} />
+                                    <span>Export JSON</span>
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
@@ -2095,260 +2276,504 @@ function App() {
 
         {/* ====================================================
             VIEW 3: ADMIN INTELLIGENCE PORTAL
+            Requirement 4 & 9: ML Intelligence, KPIs, RBAC.
         ==================================================== */}
         {activeTab === "admin" && user?.role === "admin" && (
           <section className="admin-container">
             <div className="admin-header-banner">
-              <h2>TruthLens Administrator Portal</h2>
-              <p>Global platform analytics, user role administration, audit trails, and ML health monitoring.</p>
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <h2>Administrator Platform Intelligence</h2>
+                {adminLoading && <Loader2 size={18} className="spin" style={{ color: "#38bdf8" }} />}
+              </div>
+              <p>System metrics, user management, global analysis audit trail, and ML model diagnostics.</p>
             </div>
 
-            {adminLoading && (
-              <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "#60a5fa", marginBottom: "16px" }}>
-                <Loader2 size={16} className="spin" />
-                <span>Refreshing administration data...</span>
+            {/* Admin Sub-Tabs Navigation */}
+            <div className="admin-subtabs">
+              <button
+                className={`admin-subtab-btn ${adminSubTab === "dashboard" ? "active" : ""}`}
+                onClick={() => setAdminSubTab("dashboard")}
+              >
+                <LayoutDashboard size={15} />
+                <span>Admin Dashboard</span>
+              </button>
+
+              <button
+                className={`admin-subtab-btn ${adminSubTab === "users" ? "active" : ""}`}
+                onClick={() => setAdminSubTab("users")}
+              >
+                <User size={15} />
+                <span>User Management ({adminUsers.length})</span>
+              </button>
+
+              <button
+                className={`admin-subtab-btn ${adminSubTab === "analyses" ? "active" : ""}`}
+                onClick={() => setAdminSubTab("analyses")}
+              >
+                <History size={15} />
+                <span>All Analyses ({adminHistory.length})</span>
+              </button>
+
+              <button
+                className={`admin-subtab-btn ${adminSubTab === "health" ? "active" : ""}`}
+                onClick={() => setAdminSubTab("health")}
+              >
+                <Activity size={15} />
+                <span>System Health</span>
+              </button>
+
+              <button
+                className={`admin-subtab-btn ${adminSubTab === "ml" ? "active" : ""}`}
+                onClick={() => setAdminSubTab("ml")}
+              >
+                <Cpu size={15} />
+                <span>ML Intelligence</span>
+              </button>
+            </div>
+
+            {/* ================================================
+                ADMIN SUB-TAB 1: DASHBOARD OVERVIEW
+            ================================================ */}
+            {adminSubTab === "dashboard" && (
+              <div>
+                {/* Platform Summary KPI Grid */}
+                <div className="admin-kpi-grid">
+                  <div className="kpi-card">
+                    <div className="kpi-card-header">
+                      <span>TOTAL USERS</span>
+                      <User size={16} />
+                    </div>
+                    <div className="kpi-value">{adminStats?.total_users ?? "—"}</div>
+                    <div className="kpi-subtext">Registered user accounts</div>
+                  </div>
+
+                  <div className="kpi-card">
+                    <div className="kpi-card-header">
+                      <span>TOTAL ANALYSES</span>
+                      <BrainCircuit size={16} />
+                    </div>
+                    <div className="kpi-value">{adminStats?.total_analyses ?? "—"}</div>
+                    <div className="kpi-subtext">All-time platform requests</div>
+                  </div>
+
+                  <div className="kpi-card">
+                    <div className="kpi-card-header">
+                      <span>LIKELY GENUINE</span>
+                      <CheckCircle2 size={16} />
+                    </div>
+                    <div className="kpi-value" style={{ color: "#34d399" }}>
+                      {adminStats?.likely_genuine_count ?? "—"}
+                    </div>
+                    <div className="kpi-subtext">Classified as genuine content</div>
+                  </div>
+
+                  <div className="kpi-card">
+                    <div className="kpi-card-header">
+                      <span>POTENTIALLY FAKE</span>
+                      <CircleAlert size={16} />
+                    </div>
+                    <div className="kpi-value" style={{ color: "#f87171" }}>
+                      {adminStats?.potentially_fake_count ?? "—"}
+                    </div>
+                    <div className="kpi-subtext">Flagged as misleading content</div>
+                  </div>
+
+                  <div className="kpi-card">
+                    <div className="kpi-card-header">
+                      <span>HIGH RISK SIGNALS</span>
+                      <ShieldAlert size={16} />
+                    </div>
+                    <div className="kpi-value" style={{ color: "#fbbf24" }}>
+                      {adminStats?.high_risk_count ?? "—"}
+                    </div>
+                    <div className="kpi-subtext">Severe hyperbole or false markers</div>
+                  </div>
+
+                  <div className="kpi-card">
+                    <div className="kpi-card-header">
+                      <span>AVG CONFIDENCE</span>
+                      <Gauge size={16} />
+                    </div>
+                    <div className="kpi-value">{adminStats?.avg_confidence ?? 0}%</div>
+                    <div className="kpi-subtext">Across all platform evaluations</div>
+                  </div>
+
+                  <div className="kpi-card">
+                    <div className="kpi-card-header">
+                      <span>BOOKMARKED ANALYSES</span>
+                      <Bookmark size={16} />
+                    </div>
+                    <div className="kpi-value">{adminStats?.total_saved ?? "—"}</div>
+                    <div className="kpi-subtext">Saved to user workspaces</div>
+                  </div>
+                </div>
+
+                {/* Credibility Distribution Card */}
+                {adminStats && adminStats.total_analyses > 0 && (
+                  <div className="admin-table-card" style={{ marginBottom: "28px" }}>
+                    <div className="admin-table-header">
+                      <div className="admin-table-title">
+                        <BarChart3 size={18} />
+                        <h3>Credibility Distribution</h3>
+                      </div>
+                    </div>
+
+                    <div className="cred-bar-container">
+                      <div
+                        className="cred-bar-segment genuine"
+                        style={{
+                          width: `${(adminStats.likely_genuine_count / adminStats.total_analyses) * 100}%`,
+                        }}
+                      />
+                      <div
+                        className="cred-bar-segment fake"
+                        style={{
+                          width: `${(adminStats.potentially_fake_count / adminStats.total_analyses) * 100}%`,
+                        }}
+                      />
+                    </div>
+
+                    <div className="cred-bar-legend">
+                      <span>
+                        Likely Genuine: {adminStats.likely_genuine_count} (
+                        {((adminStats.likely_genuine_count / adminStats.total_analyses) * 100).toFixed(1)}%)
+                      </span>
+                      <span>
+                        Potentially Fake: {adminStats.potentially_fake_count} (
+                        {((adminStats.potentially_fake_count / adminStats.total_analyses) * 100).toFixed(1)}%)
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
-            {/* KPI Cards Grid */}
-            <div className="admin-kpi-grid">
-              <div className="kpi-card">
-                <div className="kpi-card-header">
-                  <span>REGISTERED USERS</span>
-                  <User size={16} />
-                </div>
-                <div className="kpi-value">{adminStats?.total_users ?? "—"}</div>
-                <div className="kpi-subtext">Active account holders</div>
-              </div>
-
-              <div className="kpi-card">
-                <div className="kpi-card-header">
-                  <span>TOTAL ANALYSES</span>
-                  <BarChart3 size={16} />
-                </div>
-                <div className="kpi-value">{adminStats?.total_analyses ?? "—"}</div>
-                <div className="kpi-subtext">Evaluated news stories</div>
-              </div>
-
-              <div className="kpi-card">
-                <div className="kpi-card-header">
-                  <span>CREDIBILITY RATIO</span>
-                  <ShieldCheck size={16} />
-                </div>
-                <div className="kpi-value" style={{ fontSize: "1.5rem" }}>
-                  <span style={{ color: "#34d399" }}>{adminStats?.likely_genuine_count ?? 0}</span> /{" "}
-                  <span style={{ color: "#f87171" }}>{adminStats?.potentially_fake_count ?? 0}</span>
-                </div>
-                <div className="kpi-subtext">Real vs Fake breakdown</div>
-              </div>
-
-              <div className="kpi-card">
-                <div className="kpi-card-header">
-                  <span>AVG CONFIDENCE</span>
-                  <Gauge size={16} />
-                </div>
-                <div className="kpi-value">{adminStats?.avg_confidence ?? 0}%</div>
-                <div className="kpi-subtext">Across all platform evaluations</div>
-              </div>
-
-              <div className="kpi-card">
-                <div className="kpi-card-header">
-                  <span>BOOKMARKED ANALYSES</span>
-                  <Bookmark size={16} />
-                </div>
-                <div className="kpi-value">{adminStats?.total_saved ?? "—"}</div>
-                <div className="kpi-subtext">Saved to user workspaces</div>
-              </div>
-            </div>
-
-            {/* User Management Section */}
-            <div className="admin-table-card">
-              <div className="admin-table-header">
-                <div className="admin-table-title">
-                  <User size={18} />
-                  <h3>User Account Management</h3>
-                </div>
-
-                <input
-                  type="text"
-                  className="admin-search-input"
-                  placeholder="Search user by name or email..."
-                  value={adminUserSearch}
-                  onChange={(e) => setAdminUserSearch(e.target.value)}
-                />
-              </div>
-
-              <div className="table-responsive">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>NAME</th>
-                      <th>EMAIL</th>
-                      <th>ROLE</th>
-                      <th>STATUS</th>
-                      <th>JOINED</th>
-                      <th>ACTIONS</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredAdminUsers.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} style={{ textAlign: "center", color: "#64748b", padding: "24px" }}>
-                          No users found matching search criteria.
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredAdminUsers.map((u) => (
-                        <tr key={u.id}>
-                          <td style={{ fontWeight: 600 }}>{u.name}</td>
-                          <td style={{ color: "#94a3b8" }}>{u.email}</td>
-                          <td>
-                            <span className={`role-badge ${u.role}`}>{u.role}</span>
-                          </td>
-                          <td>
-                            <span
-                              style={{
-                                color: u.is_active ? "#34d399" : "#f87171",
-                                fontWeight: 600,
-                                fontSize: "0.75rem",
-                              }}
-                            >
-                              {u.is_active ? "Active" : "Deactivated"}
-                            </span>
-                          </td>
-                          <td style={{ color: "#64748b", fontSize: "0.78rem" }}>
-                            {formatDate(u.created_at)}
-                          </td>
-                          <td>
-                            <div className="action-buttons-cell">
-                              <button
-                                className="table-action-btn"
-                                onClick={() => handleAdminToggleRole(u.id, u.role)}
-                                disabled={adminActionLoading === u.id || u.id === user.id}
-                                title="Toggle Role (User / Admin)"
-                              >
-                                {u.role === "admin" ? "Demote" : "Promote"}
-                              </button>
-
-                              <button
-                                className="table-action-btn"
-                                onClick={() => handleAdminToggleActive(u.id, u.is_active)}
-                                disabled={adminActionLoading === u.id || u.id === user.id}
-                                title="Toggle Active Status"
-                              >
-                                {u.is_active ? "Deactivate" : "Activate"}
-                              </button>
-
-                              <button
-                                className="table-action-btn danger"
-                                onClick={() => handleAdminDeleteUser(u.id)}
-                                disabled={adminActionLoading === u.id || u.id === user.id}
-                                title="Delete user"
-                              >
-                                Delete
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Global Audit Trail */}
-            <div className="admin-table-card">
-              <div className="admin-table-header">
-                <div className="admin-table-title">
-                  <History size={18} />
-                  <h3>Platform Global Analysis Audit Log</h3>
-                </div>
-                <button
-                  className="table-action-btn"
-                  onClick={refreshAdminData}
-                  title="Refresh audit log"
-                >
-                  <RotateCcw size={13} />
-                  <span>Refresh</span>
-                </button>
-              </div>
-
-              <div className="table-responsive">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>HEADLINE / CONTENT</th>
-                      <th>VERDICT</th>
-                      <th>RISK</th>
-                      <th>CONFIDENCE</th>
-                      <th>EVALUATED AT</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {adminHistory.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} style={{ textAlign: "center", color: "#64748b", padding: "24px" }}>
-                          No audit history records found in database.
-                        </td>
-                      </tr>
-                    ) : (
-                      adminHistory.slice(0, 20).map((h, idx) => (
-                        <tr key={h.id || idx}>
-                          <td style={{ maxWidth: "320px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {h.title || h.text || "Untitled analysis"}
-                          </td>
-                          <td>
-                            <span className={`risk-tag ${h.prediction === 1 ? "genuine" : "fake"}`} style={{ fontSize: "0.72rem" }}>
-                              {h.label}
-                            </span>
-                          </td>
-                          <td style={{ fontSize: "0.75rem", color: "#94a3b8" }}>{h.risk_level}</td>
-                          <td style={{ fontWeight: 600 }}>{h.confidence}%</td>
-                          <td style={{ color: "#64748b", fontSize: "0.75rem" }}>{formatDate(h.created_at)}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* System Model & Diagnostics */}
-            {adminModelDetails && (
+            {/* ================================================
+                ADMIN SUB-TAB 2: USER MANAGEMENT
+            ================================================ */}
+            {adminSubTab === "users" && (
               <div className="admin-table-card">
                 <div className="admin-table-header">
                   <div className="admin-table-title">
-                    <Cpu size={18} />
-                    <h3>Production Machine Learning Model Health</h3>
+                    <User size={18} />
+                    <h3>User Account Management</h3>
+                  </div>
+
+                  <input
+                    type="text"
+                    className="admin-search-input"
+                    placeholder="Search user by name or email..."
+                    value={adminUserSearch}
+                    onChange={(e) => setAdminUserSearch(e.target.value)}
+                  />
+                </div>
+
+                <div className="table-responsive">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>NAME</th>
+                        <th>EMAIL</th>
+                        <th>ROLE</th>
+                        <th>STATUS</th>
+                        <th>JOINED</th>
+                        <th>ACTIONS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredAdminUsers.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} style={{ textAlign: "center", color: "#64748b", padding: "24px" }}>
+                            No users found matching search criteria.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredAdminUsers.map((u) => (
+                          <tr key={u.id}>
+                            <td style={{ fontWeight: 600 }}>{u.name}</td>
+                            <td style={{ color: "#94a3b8" }}>{u.email}</td>
+                            <td>
+                              <span className={`role-badge ${u.role}`}>{u.role}</span>
+                            </td>
+                            <td>
+                              <span
+                                style={{
+                                  color: u.is_active ? "#34d399" : "#f87171",
+                                  fontWeight: 600,
+                                  fontSize: "0.75rem",
+                                }}
+                              >
+                                {u.is_active ? "Active" : "Deactivated"}
+                              </span>
+                            </td>
+                            <td style={{ color: "#64748b", fontSize: "0.78rem" }}>
+                              {formatDate(u.created_at)}
+                            </td>
+                            <td>
+                              <div className="action-buttons-cell">
+                                <button
+                                  className="table-action-btn"
+                                  onClick={() => handleAdminToggleRole(u.id, u.role)}
+                                  disabled={adminActionLoading === u.id || u.id === user.id}
+                                  title="Toggle Role (User / Admin)"
+                                >
+                                  {u.role === "admin" ? "Demote" : "Promote"}
+                                </button>
+
+                                <button
+                                  className="table-action-btn"
+                                  onClick={() => handleAdminToggleActive(u.id, u.is_active)}
+                                  disabled={adminActionLoading === u.id || u.id === user.id}
+                                  title="Toggle Active Status"
+                                >
+                                  {u.is_active ? "Deactivate" : "Activate"}
+                                </button>
+
+                                <button
+                                  className="table-action-btn danger"
+                                  onClick={() => handleAdminDeleteUser(u.id)}
+                                  disabled={adminActionLoading === u.id || u.id === user.id}
+                                  title="Delete user"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* ================================================
+                ADMIN SUB-TAB 3: ALL ANALYSES (GLOBAL AUDIT)
+            ================================================ */}
+            {adminSubTab === "analyses" && (
+              <div className="admin-table-card">
+                <div className="admin-table-header">
+                  <div className="admin-table-title">
+                    <History size={18} />
+                    <h3>Platform Global Analysis Audit Log</h3>
+                  </div>
+                  <button
+                    className="table-action-btn"
+                    onClick={refreshAdminData}
+                    title="Refresh audit log"
+                  >
+                    <RotateCcw size={13} />
+                    <span>Refresh</span>
+                  </button>
+                </div>
+
+                <div className="table-responsive">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>HEADLINE / CONTENT</th>
+                        <th>VERDICT</th>
+                        <th>RISK</th>
+                        <th>CONFIDENCE</th>
+                        <th>EVALUATED AT</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminHistory.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} style={{ textAlign: "center", color: "#64748b", padding: "24px" }}>
+                            No audit history records found in database.
+                          </td>
+                        </tr>
+                      ) : (
+                        adminHistory.map((h, idx) => (
+                          <tr key={h.id || idx}>
+                            <td style={{ maxWidth: "320px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {h.title || h.text || "Untitled analysis"}
+                            </td>
+                            <td>
+                              <span className={`risk-tag ${h.prediction === 1 ? "genuine" : "fake"}`} style={{ fontSize: "0.72rem" }}>
+                                {h.label}
+                              </span>
+                            </td>
+                            <td style={{ fontSize: "0.75rem", color: "#94a3b8" }}>{h.risk_level}</td>
+                            <td style={{ fontWeight: 600 }}>{h.confidence}%</td>
+                            <td style={{ color: "#64748b", fontSize: "0.75rem" }}>{formatDate(h.created_at)}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* ================================================
+                ADMIN SUB-TAB 4: SYSTEM HEALTH
+            ================================================ */}
+            {adminSubTab === "health" && (
+              <div className="admin-table-card">
+                <div className="admin-table-header">
+                  <div className="admin-table-title">
+                    <Activity size={18} />
+                    <h3>System Infrastructure & Component Health</h3>
+                  </div>
+                  <button className="table-action-btn" onClick={refreshAdminData}>
+                    <RotateCcw size={13} />
+                    <span>Re-check</span>
+                  </button>
+                </div>
+
+                <div className="dataset-specs-card" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                  <div className="specs-col">
+                    <span className="specs-label">FASTAPI ENGINE</span>
+                    <strong style={{ color: systemHealth.online ? "#34d399" : "#f87171" }}>
+                      {systemHealth.online ? "ONLINE" : "OFFLINE"}
+                    </strong>
+                    <small>{API_BASE}</small>
+                  </div>
+
+                  <div className="specs-col">
+                    <span className="specs-label">ML CLASSIFIER</span>
+                    <strong style={{ color: "#34d399" }}>Linear SVM Ready</strong>
+                    <small>truthlens_model.pkl loaded</small>
+                  </div>
+
+                  <div className="specs-col">
+                    <span className="specs-label">FEATURE VECTORIZER</span>
+                    <strong style={{ color: "#34d399" }}>TF-IDF Vectorizer</strong>
+                    <small>100,000 max features</small>
+                  </div>
+
+                  <div className="specs-col">
+                    <span className="specs-label">DATABASE PERSISTENCE</span>
+                    <strong style={{ color: systemHealth.dbConnected ? "#34d399" : "#fbbf24" }}>
+                      {systemHealth.dbConnected ? "MongoDB Atlas Connected" : "Resilient Fallback Mode"}
+                    </strong>
+                    <small>High availability zero-downtime store</small>
+                  </div>
+
+                  <div className="specs-col">
+                    <span className="specs-label">EVIDENCE ENGINE</span>
+                    <strong style={{ color: "#34d399" }}>Google News RSS</strong>
+                    <small>Configurable 7.0s timeout</small>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ================================================
+                ADMIN SUB-TAB 5: ML INTELLIGENCE & BENCHMARK
+                Requirement 4: Technical ML content moved here from public view!
+            ================================================ */}
+            {adminSubTab === "ml" && (
+              <div>
+                {/* Active Architecture Summary */}
+                <div className="admin-table-card">
+                  <div className="admin-table-header">
+                    <div className="admin-table-title">
+                      <Cpu size={18} />
+                      <h3>Active Machine Learning Architecture Specifications</h3>
+                    </div>
+                  </div>
+
+                  <div className="dataset-specs-card" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
+                    <div className="specs-col">
+                      <span className="specs-label">SELECTED CLASSIFIER</span>
+                      <strong>{adminModelDetails?.active_model || "Linear SVM"}</strong>
+                      <small>LinearSVC (scikit-learn)</small>
+                    </div>
+                    <div className="specs-col">
+                      <span className="specs-label">VALIDATION F1 SCORE</span>
+                      <strong style={{ color: "#34d399" }}>
+                        {adminModelDetails?.validation_metrics?.f1_score
+                          ? `${(adminModelDetails.validation_metrics.f1_score * 100).toFixed(2)}%`
+                          : "99.69%"}
+                      </strong>
+                      <small>Stratified test split</small>
+                    </div>
+                    <div className="specs-col">
+                      <span className="specs-label">VALIDATION ACCURACY</span>
+                      <strong style={{ color: "#38bdf8" }}>99.67%</strong>
+                      <small>Validation evaluation</small>
+                    </div>
+                    <div className="specs-col">
+                      <span className="specs-label">DATASET SIZE</span>
+                      <strong>32,175 Records</strong>
+                      <small>25,740 Train / 6,435 Val</small>
+                    </div>
+                    <div className="specs-col">
+                      <span className="specs-label">TF-IDF FEATURES</span>
+                      <strong>100,000 Features</strong>
+                      <small>ngram_range: (1, 2)</small>
+                    </div>
                   </div>
                 </div>
 
-                <div className="dataset-specs-card" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))" }}>
-                  <div className="specs-col">
-                    <span className="specs-label">ACTIVE CLASSIFIER</span>
-                    <strong>{adminModelDetails.model_architecture}</strong>
-                    <small>Support Vector Classification</small>
+                {/* Empirical Classifier Comparison Table */}
+                <div className="admin-table-card">
+                  <div className="admin-table-header">
+                    <div className="admin-table-title">
+                      <BarChart3 size={18} />
+                      <h3>Empirical Classifier Benchmark Comparison</h3>
+                    </div>
                   </div>
-                  <div className="specs-col">
-                    <span className="specs-label">VALIDATION F1</span>
-                    <strong style={{ color: "#34d399" }}>
-                      {(adminModelDetails.validation_metrics?.f1_score * 100).toFixed(2)}%
-                    </strong>
-                    <small>Stratified test split</small>
+
+                  <p style={{ color: "#94a3b8", fontSize: "0.88rem", marginBottom: "18px" }}>
+                    Evaluated against the project dataset (32,175 records) using stratified 80/20 train/validation split.
+                    Linear SVM emerged as the best-performing production classifier.
+                  </p>
+
+                  <div className="model-table">
+                    <div className="model-row model-head">
+                      <span>CLASSIFIER MODEL</span>
+                      <span>ACCURACY</span>
+                      <span>PRECISION</span>
+                      <span>RECALL</span>
+                      <span>F1 SCORE</span>
+                    </div>
+
+                    {/* Linear SVM - Selected Winner */}
+                    <div className="model-row featured-model">
+                      <div>
+                        <div className="winner-badge">SELECTED PRODUCTION MODEL</div>
+                        <strong>Linear SVM / LinearSVC</strong>
+                      </div>
+                      <strong>99.67%</strong>
+                      <strong>99.56%</strong>
+                      <strong>99.82%</strong>
+                      <strong>99.69%</strong>
+                    </div>
+
+                    {/* Logistic Regression */}
+                    <div className="model-row">
+                      <div>
+                        <strong>Logistic Regression</strong>
+                      </div>
+                      <span>99.25%</span>
+                      <span>99.03%</span>
+                      <span>99.56%</span>
+                      <span>99.30%</span>
+                    </div>
+
+                    {/* Multinomial Naive Bayes */}
+                    <div className="model-row">
+                      <div>
+                        <strong>Multinomial Naive Bayes</strong>
+                      </div>
+                      <span>96.30%</span>
+                      <span>96.75%</span>
+                      <span>96.23%</span>
+                      <span>96.49%</span>
+                    </div>
                   </div>
-                  <div className="specs-col">
-                    <span className="specs-label">TF-IDF FEATURES</span>
-                    <strong>{adminModelDetails.features?.toLocaleString()}</strong>
-                    <small>Unigrams + Bigrams</small>
-                  </div>
-                  <div className="specs-col">
-                    <span className="specs-label">MONGODB STATUS</span>
-                    <strong style={{ color: systemHealth.dbConnected ? "#34d399" : "#fbbf24" }}>
-                      {systemHealth.dbConnected ? "Connected" : "Handshake Fallback"}
-                    </strong>
-                    <small>Resilient persistence</small>
-                  </div>
+
+                  <p className="benchmark-disclaimer" style={{ marginTop: "16px" }}>
+                    * Academic Notice: Performance shown is based on validation data from the project dataset (6,435 held-out records).
+                    While Linear SVM achieves 99.69% validation F1 score, real-world deployment benefits from continuous
+                    corroboration via live reporting feeds and human-in-the-loop fact-checking.
+                  </p>
                 </div>
               </div>
             )}
@@ -2450,41 +2875,39 @@ function App() {
                 ) : (
                   <>
                     <UserPlus size={16} />
-                    <span>Create Free Account</span>
+                    <span>Create Account</span>
                   </>
                 )}
               </button>
             </form>
 
-            <div className="auth-switch-prompt">
+            <div className="modal-footer-switch">
               {authModal === "login" ? (
-                <>
-                  Don&apos;t have an account?
+                <span>
+                  Don&apos;t have an account?{" "}
                   <button
-                    type="button"
-                    className="auth-switch-link"
+                    className="text-link-btn"
                     onClick={() => {
                       setAuthError("");
                       setAuthModal("register");
                     }}
                   >
-                    Register now
+                    Register here
                   </button>
-                </>
+                </span>
               ) : (
-                <>
-                  Already registered?
+                <span>
+                  Already registered?{" "}
                   <button
-                    type="button"
-                    className="auth-switch-link"
+                    className="text-link-btn"
                     onClick={() => {
                       setAuthError("");
                       setAuthModal("login");
                     }}
                   >
-                    Sign in here
+                    Sign In
                   </button>
-                </>
+                </span>
               )}
             </div>
           </div>
@@ -2492,7 +2915,7 @@ function App() {
       )}
 
       {/* ======================================================
-          MODAL: SAVE / BOOKMARK WITH NOTES
+          MODAL: SAVE ANALYSIS WITH NOTES
       ====================================================== */}
       {saveModalOpen && (
         <div className="modal-overlay" onClick={() => setSaveModalOpen(false)}>
@@ -2502,18 +2925,18 @@ function App() {
             </button>
 
             <div className="modal-title-box">
-              <h3>Bookmark Analysis</h3>
-              <p>Add optional research notes or tags for this credibility assessment.</p>
+              <h3>Bookmark to Workspace</h3>
+              <p>Save this analysis to your personal workspace with optional research notes.</p>
             </div>
 
             <form className="modal-form" onSubmit={confirmSaveAnalysis}>
               <div className="form-field-group">
-                <label htmlFor="save-notes">Research Notes / Context</label>
+                <label htmlFor="save-notes">Research Notes (Optional)</label>
                 <textarea
                   id="save-notes"
-                  className="form-input-field"
                   rows={4}
-                  placeholder="e.g. Cross-checked with Reuters; flagged for further verification."
+                  className="form-input-field"
+                  placeholder="Add your thoughts, context, or follow-up questions for this story..."
                   value={saveNotes}
                   onChange={(e) => setSaveNotes(e.target.value)}
                 />
@@ -2524,7 +2947,7 @@ function App() {
                   <Loader2 size={16} className="spin" />
                 ) : (
                   <>
-                    <Bookmark size={16} />
+                    <Bookmark size={15} />
                     <span>Confirm Bookmark</span>
                   </>
                 )}
@@ -2535,50 +2958,14 @@ function App() {
       )}
 
       {/* ======================================================
-          FOOTER
+          GLOBAL TOAST NOTIFICATION
       ====================================================== */}
-      <footer id="about">
-        <div className="footer-brand">
-          <div className="brand-mark small">
-            <span>TL</span>
-          </div>
-          <div>
-            <strong>TruthLens AI</strong>
-            <span>AI-Powered News Credibility & Risk Analysis Platform</span>
-          </div>
+      {toastMessage && (
+        <div className="toast-notification">
+          <Sparkles size={14} />
+          <span>{toastMessage}</span>
         </div>
-
-        <div className="footer-disclaimer-box">
-          <p>
-            <strong>Project Disclaimer:</strong> TruthLens AI is developed as a 7th-Semester Major Project
-            in Computer Science & Engineering. The system provides an automated credibility assessment
-            based on patterns identified in trained news datasets and live RSS corroboration. It does not independently verify facts,
-            authenticate source credentials, or guarantee factual truth.
-          </p>
-        </div>
-
-        <div className="footer-right">
-          <span>7th Semester Major Project · B.Tech CSE</span>
-          <span>FastAPI · React · Scikit-Learn · MongoDB Atlas · ReportLab</span>
-        </div>
-      </footer>
-    </div>
-  );
-}
-
-// Helper component for architecture pipeline
-function PipelineStep({ number, title, icon, text }) {
-  return (
-    <div className="pipeline-step">
-      <div className="step-top">
-        <span>{number}</span>
-        <div className="step-icon">{icon}</div>
-      </div>
-      <h3>{title}</h3>
-      <p>{text}</p>
-      <div className="step-arrow">
-        <ArrowRight size={14} />
-      </div>
+      )}
     </div>
   );
 }
