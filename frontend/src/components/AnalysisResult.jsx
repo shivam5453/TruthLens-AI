@@ -23,27 +23,39 @@ export default function AnalysisResult({
 
   const isGenuine = result.prediction === 1;
   const isMisleading = result.prediction === 0;
+
+  // Safe extraction of evidence items array
+  const evidenceList = Array.isArray(result.evidence)
+    ? result.evidence
+    : Array.isArray(result.evidence?.items)
+    ? result.evidence.items
+    : Array.isArray(result.evidence?.sources)
+    ? result.evidence.sources
+    : Array.isArray(result.sources)
+    ? result.sources
+    : [];
+
   const isInsufficient =
     result.evidence_status === "insufficient" ||
-    (result.evidence && result.evidence.length === 0 && !result.confidence);
+    result.evidence?.status === "insufficient" ||
+    (evidenceList.length === 0 && !result.confidence);
 
-  // Calibrated confidence display
+  // Confidence score display (derived from decision margin)
   const rawConf = typeof result.confidence === "number" ? result.confidence : 0.85;
   const confidencePct = Math.round(rawConf > 1 ? rawConf : rawConf * 100);
 
   // Evidence counts
-  const evidenceList = result.evidence || result.sources || [];
   const supportingCount =
     result.supporting_count ??
-    evidenceList.filter((e) => e.status === "supporting" || e.relationship === "supporting").length;
+    evidenceList.filter((e) => e.status === "supporting" || e.relationship === "supporting" || e.evidence_type === "supporting").length;
   const contradictingCount =
     result.contradicting_count ??
     evidenceList.filter(
-      (e) => e.status === "contradicting" || e.relationship === "contradicting" || e.status === "debunk"
+      (e) => e.status === "contradicting" || e.relationship === "contradicting" || e.status === "debunk" || e.evidence_type === "contradicting"
     ).length;
   const relatedCount =
     result.related_count ??
-    evidenceList.filter((e) => e.status === "neutral" || e.relationship === "related").length;
+    evidenceList.filter((e) => e.status === "neutral" || e.relationship === "related" || e.evidence_type === "related").length;
 
   const formatDate = (dateStr) => {
     if (!dateStr) return "Recent";

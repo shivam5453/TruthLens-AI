@@ -21,7 +21,7 @@ export default function Footer({ onAnalyzeClick }) {
           </p>
           <div className="footer-system-note">
             <Globe size={13} />
-            <span>FastAPI • Scikit-Learn • React 19 • Google News RSS</span>
+            <span>Dual-Signal Linguistic & Real-Time Evidence Verification</span>
           </div>
         </div>
 

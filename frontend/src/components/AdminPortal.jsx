@@ -50,6 +50,12 @@ export default function AdminPortal({
     }
   };
 
+  const formatConfidence = (val) => {
+    if (typeof val !== "number") return "85%";
+    const num = val > 1 ? val : val * 100;
+    return `${Math.round(num)}%`;
+  };
+
   return (
     <div className="admin-shell">
       {/* Admin Top Header Banner */}
@@ -188,7 +194,7 @@ export default function AdminPortal({
                               {item.prediction === 1 ? "Likely Genuine" : "Likely Misleading"}
                             </span>
                           </td>
-                          <td>{Math.round((item.confidence || 0.85) * 100)}%</td>
+                          <td>{formatConfidence(item.confidence)}</td>
                           <td>{formatDate(item.created_at)}</td>
                         </tr>
                       ))}
@@ -344,7 +350,7 @@ export default function AdminPortal({
                             {item.prediction === 1 ? "Likely Genuine" : "Likely Misleading"}
                           </span>
                         </td>
-                        <td>{Math.round((item.confidence || 0.85) * 100)}%</td>
+                        <td>{formatConfidence(item.confidence)}</td>
                         <td>
                           <span className="evidence-status-pill">
                             {item.fetch_evidence !== false ? "Queried (Google News RSS)" : "Skipped"}
@@ -447,35 +453,35 @@ export default function AdminPortal({
                 <div className="ml-specs-grid">
                   <div className="spec-block">
                     <span className="spec-k">Production Classifier</span>
-                    <strong className="spec-v">{adminModelDetails?.active_model || adminModelDetails?.model_architecture || "Linear Support Vector Machine (LinearSVC)"}</strong>
+                    <strong className="spec-v">{adminModelDetails?.active_model || "LinearSVC (C=1.5, class_weight='balanced', max_iter=5000)"}</strong>
+                  </div>
+                  <div className="spec-block">
+                    <span className="spec-k">Saved Model Artifact</span>
+                    <strong className="spec-v">ml/models/truthlens_model.pkl</strong>
                   </div>
                   <div className="spec-block">
                     <span className="spec-k">Feature Extraction</span>
-                    <strong className="spec-v">TfidfVectorizer (Scikit-Learn)</strong>
+                    <strong className="spec-v">TfidfVectorizer (100,000 features, min_df=2, max_df=0.95)</strong>
                   </div>
                   <div className="spec-block">
-                    <span className="spec-k">Max Vocabulary Features</span>
-                    <strong className="spec-v">100,000 N-Gram Features</strong>
+                    <span className="spec-k">Saved Vectorizer Artifact</span>
+                    <strong className="spec-v">ml/models/tfidf_vectorizer.pkl</strong>
                   </div>
                   <div className="spec-block">
-                    <span className="spec-k">N-Gram Range</span>
-                    <strong className="spec-v">(1, 2) Unigrams & Bigrams</strong>
+                    <span className="spec-k">N-Gram & Sublinear TF</span>
+                    <strong className="spec-v">ngram_range=(1,2), sublinear_tf=True, strip_accents='unicode'</strong>
                   </div>
                   <div className="spec-block">
-                    <span className="spec-k">Sublinear TF Scaling</span>
-                    <strong className="spec-v">Enabled (logarithmic term weighting)</strong>
+                    <span className="spec-k">Cleaned Dataset</span>
+                    <strong className="spec-v">32,175 cleaned records (ISOT Dataset)</strong>
                   </div>
                   <div className="spec-block">
-                    <span className="spec-k">Stopwords Treatment</span>
-                    <strong className="spec-v">English corpus filter applied</strong>
+                    <span className="spec-k">Training Partition (80%)</span>
+                    <strong className="spec-v">25,740 training records (stratified)</strong>
                   </div>
                   <div className="spec-block">
-                    <span className="spec-k">Training Dataset</span>
-                    <strong className="spec-v">ISOT Fake & Real News Dataset</strong>
-                  </div>
-                  <div className="spec-block">
-                    <span className="spec-k">Curated Samples</span>
-                    <strong className="spec-v">44,898 total news articles</strong>
+                    <span className="spec-k">Validation Partition (20%)</span>
+                    <strong className="spec-v">6,435 validation records (stratified)</strong>
                   </div>
                 </div>
               </div>
@@ -541,37 +547,63 @@ export default function AdminPortal({
               {/* Confusion Matrix & Dataset Verification */}
               <div className="ml-specs-card">
                 <h4>Linear SVM Production Confusion Matrix (Validation Partition: 6,435 samples)</h4>
-                <div className="cm-grid-container">
-                  <div className="cm-cell genuine">
-                    <span className="cm-label">True Genuine (Real News)</span>
-                    <strong className="cm-val">3,393</strong>
-                    <span className="cm-rate">99.82% True Positive Rate</span>
-                  </div>
-                  <div className="cm-cell false-pos">
-                    <span className="cm-label">False Genuine (Type I Error)</span>
-                    <strong className="cm-val">15</strong>
-                    <span className="cm-rate">0.44% False Discovery Rate</span>
-                  </div>
-                  <div className="cm-cell false-neg">
-                    <span className="cm-label">False Misleading (Type II Error)</span>
-                    <strong className="cm-val">6</strong>
-                    <span className="cm-rate">0.18% Miss Rate</span>
-                  </div>
-                  <div className="cm-cell fake">
-                    <span className="cm-label">True Misleading (Fake News)</span>
-                    <strong className="cm-val">3,021</strong>
-                    <span className="cm-rate">99.51% Specificity</span>
-                  </div>
+                <p className="cm-intro-text">
+                  Actual verification matrix from <code>ml/reports/model_metrics.json</code> where <code>0 = Fake</code> and <code>1 = Real</code>:
+                </p>
+                <div className="cm-table-wrap">
+                  <table className="data-table cm-table">
+                    <thead>
+                      <tr>
+                        <th>Actual \ Predicted</th>
+                        <th>Predicted Fake (0)</th>
+                        <th>Predicted Real (1)</th>
+                        <th>Class Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td><strong>Actual Fake (0)</strong></td>
+                        <td className="cm-val-cell genuine">
+                          <strong>3,021</strong>
+                          <span>True Negative (TN)</span>
+                        </td>
+                        <td className="cm-val-cell error">
+                          <strong>15</strong>
+                          <span>False Positive (FP)</span>
+                        </td>
+                        <td><strong>3,036</strong></td>
+                      </tr>
+                      <tr>
+                        <td><strong>Actual Real (1)</strong></td>
+                        <td className="cm-val-cell error">
+                          <strong>6</strong>
+                          <span>False Negative (FN)</span>
+                        </td>
+                        <td className="cm-val-cell genuine">
+                          <strong>3,393</strong>
+                          <span>True Positive (TP)</span>
+                        </td>
+                        <td><strong>3,399</strong></td>
+                      </tr>
+                      <tr className="total-row">
+                        <td><strong>Predicted Total</strong></td>
+                        <td><strong>3,027</strong></td>
+                        <td><strong>3,408</strong></td>
+                        <td><strong>6,435</strong></td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
               </div>
 
-              {/* Calibration & Decision Boundary Note */}
+              {/* Decision Boundary & Confidence Score Calculation */}
               <div className="ml-footnote-card">
-                <h4>Decision Boundary & Probability Calibration</h4>
+                <h4>Decision Boundary & Confidence Score Calculation</h4>
                 <p>
-                  LinearSVC optimizes a squared hinge loss function. Continuous confidence scores
-                  are calibrated by computing the signed distance to the separating hyperplane and
-                  normalizing via a sigmoid mapping function, yielding bounded [0, 1] credibility probabilities.
+                  The production model uses <code>LinearSVC</code>, which optimizes a squared hinge loss function.
+                  The application confidence display is derived directly from the decision function margin:
+                  <code>confidence = (1 / (1 + exp(-|decision_score|))) * 100</code>.
+                  This margin mapping provides an intuitive display score for evaluation and is not a calibrated probability.
                 </p>
               </div>
             </div>
@@ -632,11 +664,11 @@ export default function AdminPortal({
                   <h4>ML Inference Pipeline</h4>
                   <div className="health-row">
                     <span>Model:</span>
-                    <strong>LinearSVC (Joblib loaded)</strong>
+                    <strong>truthlens_model.pkl</strong>
                   </div>
                   <div className="health-row">
                     <span>Vectorizer:</span>
-                    <strong>100k Features Active</strong>
+                    <strong>tfidf_vectorizer.pkl</strong>
                   </div>
                 </div>
 

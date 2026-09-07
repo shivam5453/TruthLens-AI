@@ -59,6 +59,12 @@ export default function UserWorkspace({
     }
   };
 
+  const formatConfidence = (val) => {
+    if (typeof val !== "number") return "85%";
+    const num = val > 1 ? val : val * 100;
+    return `${Math.round(num)}%`;
+  };
+
   const filteredHistory = userHistory.filter((item) => {
     if (userHistoryFilter === "genuine" && item.prediction !== 1) return false;
     if (userHistoryFilter === "fake" && item.prediction !== 0) return false;
@@ -253,7 +259,7 @@ export default function UserWorkspace({
                         </td>
                         <td>
                           <span className="table-conf-val">
-                            {Math.round((item.confidence || 0.85) * 100)}%
+                            {formatConfidence(item.confidence)}
                           </span>
                         </td>
                         <td>{formatDate(item.created_at)}</td>
@@ -345,7 +351,7 @@ export default function UserWorkspace({
                   <div className="history-card-bottom">
                     <div className="history-score-tag">
                       <span>Confidence:</span>
-                      <strong>{Math.round((item.confidence || 0.85) * 100)}%</strong>
+                      <strong>{formatConfidence(item.confidence)}</strong>
                     </div>
 
                     <div className="history-actions-row">
