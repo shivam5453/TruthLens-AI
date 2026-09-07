@@ -70,15 +70,20 @@ class SavedAnalysisResponse(BaseModel):
 class EvidenceItem(BaseModel):
     title: str
     source_name: str
+    source: Optional[str] = None
     url: str
     published_at: Optional[str] = None
+    published: Optional[str] = None
     snippet: str
     evidence_type: str = "related"  # "supporting" | "contradicting" | "related" | "unknown"
+    status: Optional[str] = None
+    relevance_score: Optional[float] = None
 
 
 class EvidenceSummary(BaseModel):
-    status: str = "unavailable"  # "supporting" | "contradicting" | "insufficient" | "unavailable"
+    status: str = "unavailable"  # "supporting" | "contradicting" | "related" | "insufficient" | "unavailable"
     query: str = ""
+    queries_used: List[str] = []
     message: str = ""
     corroboration_notes: str = ""
     total_found: int = 0

@@ -21,8 +21,20 @@ export default function AnalysisResult({
 }) {
   if (!result) return null;
 
-  const isGenuine = result.prediction === 1;
-  const isMisleading = result.prediction === 0;
+  // Clean display text helper for robust entity decoding
+  const cleanDisplay = (txt) => {
+    if (!txt) return "";
+    return String(txt)
+      .replace(/&nbsp;/g, " ")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
 
   // Safe extraction of evidence items array
   const evidenceList = Array.isArray(result.evidence)
@@ -34,15 +46,6 @@ export default function AnalysisResult({
     : Array.isArray(result.sources)
     ? result.sources
     : [];
-
-  const isInsufficient =
-    result.evidence_status === "insufficient" ||
-    result.evidence?.status === "insufficient" ||
-    (evidenceList.length === 0 && !result.confidence);
-
-  // Confidence score display (derived from decision margin)
-  const rawConf = typeof result.confidence === "number" ? result.confidence : 0.85;
-  const confidencePct = Math.round(rawConf > 1 ? rawConf : rawConf * 100);
 
   // Evidence counts
   const supportingCount =
@@ -56,6 +59,23 @@ export default function AnalysisResult({
   const relatedCount =
     result.related_count ??
     evidenceList.filter((e) => e.status === "neutral" || e.relationship === "related" || e.evidence_type === "related").length;
+
+  const hasStrongSupporting =
+    (result.evidence_status === "supporting" || result.evidence?.status === "supporting" || supportingCount > 0) &&
+    contradictingCount === 0;
+
+  const isGenuine = result.prediction === 1 || hasStrongSupporting;
+  const isMisleading = result.prediction === 0 && !hasStrongSupporting;
+
+  const isInsufficient =
+    !hasStrongSupporting &&
+    (result.evidence_status === "insufficient" ||
+      result.evidence?.status === "insufficient" ||
+      (evidenceList.length === 0 && !result.confidence));
+
+  // Confidence score display (derived from decision margin)
+  const rawConf = typeof result.confidence === "number" ? result.confidence : 0.85;
+  const confidencePct = Math.round(rawConf > 1 ? rawConf : rawConf * 100);
 
   const formatDate = (dateStr) => {
     if (!dateStr) return "Recent";
@@ -245,9 +265,9 @@ export default function AnalysisResult({
                         </span>
                       </div>
 
-                      <h4 className="ev-card-title">{ev.title || "External Source Article"}</h4>
+                      <h4 className="ev-card-title">{cleanDisplay(ev.title) || "External Source Article"}</h4>
 
-                      {ev.snippet && <p className="ev-card-snippet">{ev.snippet}</p>}
+                      {ev.snippet && <p className="ev-card-snippet">{cleanDisplay(ev.snippet)}</p>}
 
                       {ev.url && (
                         <div className="ev-card-bottom">
