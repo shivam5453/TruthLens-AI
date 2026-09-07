@@ -263,6 +263,23 @@ a {
   box-shadow: 0 0 14px rgba(255, 94, 126, 0.8);
 }
 
+.status-pulse.checking {
+  background: #f59e0b;
+  box-shadow: 0 0 14px rgba(245, 158, 11, 0.8);
+  animation: pulseChecking 1.5s infinite ease-in-out;
+}
+
+@keyframes pulseChecking {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
 /* =========================
    HERO
 ========================= */
@@ -2669,4 +2686,91 @@ footer {
   background: rgba(239, 68, 68, 0.2);
   color: #f87171;
   border-color: rgba(239, 68, 68, 0.4);
+}
+
+/* Admin Sub-Tabs Navigation */
+.admin-subtabs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.admin-subtab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  border-radius: 10px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #94a3b8;
+  background: transparent;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+}
+
+.admin-subtab-btn:hover {
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.admin-subtab-btn.active {
+  color: #fff;
+  background: rgba(14, 165, 233, 0.15);
+  border: 1px solid rgba(14, 165, 233, 0.35);
+}
+
+/* Dashboard Summary Header & Quick Actions */
+.workspace-dashboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.workspace-dashboard-title h2 {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: #f8fafc;
+  margin-bottom: 4px;
+}
+
+.workspace-dashboard-title p {
+  color: #94a3b8;
+  font-size: 0.88rem;
+}
+
+/* Credibility Distribution Bar */
+.cred-bar-container {
+  display: flex;
+  height: 10px;
+  width: 100%;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 12px 0 6px;
+}
+
+.cred-bar-segment.genuine {
+  background: #34d399;
+  transition: width 0.4s ease;
+}
+
+.cred-bar-segment.fake {
+  background: #f87171;
+  transition: width 0.4s ease;
+}
+
+.cred-bar-legend {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.76rem;
+  color: #94a3b8;
 }
