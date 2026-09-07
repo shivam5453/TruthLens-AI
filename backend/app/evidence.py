@@ -1,4 +1,5 @@
 import asyncio
+import html
 import os
 import re
 import urllib.parse
@@ -11,6 +12,25 @@ from dotenv import load_dotenv
 from .models_auth import EvidenceItem, EvidenceSummary
 
 load_dotenv()
+
+
+def sanitize_text(text: str) -> str:
+    """Strip HTML tags, decode HTML entities, normalize quotes and whitespace."""
+    if not text:
+        return ""
+    # Strip XML/HTML tags
+    clean = re.sub(r"<[^>]+>", " ", text)
+    # Decode HTML entities (double-pass handles doubly-escaped entities like &amp;nbsp;)
+    for _ in range(2):
+        clean = html.unescape(clean)
+    # Replace non-breaking spaces (\xa0) with standard spaces
+    clean = clean.replace("\xa0", " ")
+    # Normalize common typographic punctuation and quotes
+    clean = clean.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    # Clean Unicode replacement char or malformed characters
+    clean = clean.replace("\ufffd", "'")
+    # Collapse multiple whitespace
+    return re.sub(r"\s+", " ", clean).strip()
 
 
 def get_evidence_timeout() -> float:
@@ -65,21 +85,38 @@ SUPPORTING_SIGNALS = {
     "reports", "reported", "passes", "passed", "agrees", "verifies", "verified",
     "press release", "discovery", "researchers find", "agency confirms", "successful",
     "successfully", "landed", "launched", "approved", "certifies", "certified",
-    "milestone", "authorities confirm"
+    "milestone", "authorities confirm", "finds", "found", "discovers", "discovered",
+    "detects", "detected", "reveals", "revealed", "analyzes", "analyzed",
+    "surveys", "surveyed", "collects", "collected",
+    "samples", "drives", "driven", "snaps", "images", "photographs"
 }
 
 TRUSTED_DOMAINS = {
-    "nasa.gov", "reuters.com", "apnews.com", "bbc.com", "scientificamerican.com",
-    "nature.com", "scmp.com", "bloomberg.com", "wsj.com", "nytimes.com",
-    "snopes.com", "politifact.com", "factcheck.org", "thehindu.com", "sciencedaily.com",
-    "afp.com", "nationalgeographic.com", "pbs.org", "wbur.org", "aljazeera.com"
+    "nasa.gov", "jpl.nasa.gov", "space.com", "reuters.com", "apnews.com", "bbc.com",
+    "scientificamerican.com", "nature.com", "scmp.com", "bloomberg.com", "wsj.com",
+    "nytimes.com", "snopes.com", "politifact.com", "factcheck.org", "thehindu.com",
+    "sciencedaily.com", "afp.com", "nationalgeographic.com", "pbs.org", "wbur.org",
+    "aljazeera.com", "newscientist.com", "phys.org"
 }
 
 STEM_MAP = {
     "thoughts": "thought", "reading": "read", "reads": "read", "minds": "mind",
     "mindwaves": "mindwave", "dreams": "dream", "dreaming": "dream",
     "towers": "tower", "landed": "land", "landing": "land", "lands": "land",
-    "missions": "mission", "rovers": "rover", "crewed": "crew", "lunar": "moon"
+    "missions": "mission", "rovers": "rover", "crewed": "crew", "lunar": "moon",
+    "exploring": "explore", "explored": "explore", "explores": "explore", "exploration": "explore",
+    "studying": "study", "studies": "study", "studied": "study",
+    "geological": "geology", "geologist": "geology", "geologic": "geology",
+    "surveys": "survey", "surveying": "survey", "surveyed": "survey",
+    "samples": "sample", "sampling": "sample", "sampled": "sample",
+    "drives": "drive", "driving": "drive", "driven": "drive",
+    "discovers": "discover", "discovering": "discover", "discovered": "discover", "discoveries": "discover",
+    "detects": "detect", "detecting": "detect", "detected": "detect",
+    "analyzes": "analyze", "analyzing": "analyze", "analyzed": "analyze", "analysis": "analyze",
+    "photographs": "photo", "photographing": "photo", "photographed": "photo",
+    "images": "image", "imaging": "image",
+    "confirms": "confirm", "confirming": "confirm", "confirmed": "confirm", "confirmation": "confirm",
+    "impacts": "impact", "craters": "crater", "terrains": "terrain", "rocks": "rock"
 }
 
 
@@ -211,13 +248,15 @@ def evaluate_article_relevance_and_type(
     Returns: (is_relevant, relevance_score, evidence_type)
     evidence_type is one of: 'supporting', 'contradicting', 'related'
     """
-    combined_art = f"{title} {snippet}".lower()
+    title_clean = sanitize_text(title)
+    snippet_clean = sanitize_text(snippet)
+    combined_art = f"{title_clean} {snippet_clean}".lower()
     art_words = set(re.findall(r"\b[a-zA-Z0-9]{2,}\b", combined_art))
     art_stems = set(STEM_MAP.get(w, w) for w in art_words)
 
     # Overlap with specific assertion stems
     overlap = claim_prof["assertion_stems"].intersection(art_stems)
-    title_words = set(re.findall(r"\b[a-zA-Z0-9]{2,}\b", title.lower()))
+    title_words = set(re.findall(r"\b[a-zA-Z0-9]{2,}\b", title_clean.lower()))
     title_stems = set(STEM_MAP.get(w, w) for w in title_words)
     title_overlap = claim_prof["assertion_stems"].intersection(title_stems)
 
@@ -237,20 +276,18 @@ def evaluate_article_relevance_and_type(
 
     # Strict Relevance Filter:
     # 1. If claim is about mind-reading (contains "thought", "mind", "brain", "dream"):
-    #    The article MUST contain at least one of these mental mechanism tokens
     mental_tokens = {"thought", "mind", "brain", "dream", "mindwave", "telepathy"}
     if claim_prof["assertion_stems"].intersection(mental_tokens):
         if not art_stems.intersection(mental_tokens):
             return False, 0.0, "unrelated"
 
-    # 2. If claim is about Mars rover landing:
-    #    The article MUST contain "mars" AND ("rover" or "land")
+    # 2. If claim is about Mars rover:
+    #    The article MUST contain "mars" AND ("rover" or "land" or "perseverance" or "curiosity")
     if "mars" in claim_prof["assertion_stems"] and "rover" in claim_prof["assertion_stems"]:
-        if "mars" not in art_stems or not ("rover" in art_stems or "land" in art_stems):
+        if "mars" not in art_stems or not ("rover" in art_stems or "land" in art_stems or has_specific_entity):
             return False, 0.0, "unrelated"
 
     # 3. If claim is about Artemis:
-    #    The article MUST contain "artemis" OR ("lunar" or "moon")
     if "artemis" in claim_prof["assertion_stems"]:
         if "artemis" not in art_stems and not ("moon" in art_stems or "lunar" in art_stems):
             return False, 0.0, "unrelated"
@@ -259,14 +296,18 @@ def evaluate_article_relevance_and_type(
     if len(overlap) < 2 and not has_specific_entity:
         return False, 0.0, "unrelated"
 
+    # Source authority detection
+    is_official_source = any(dom in source_name.lower() or dom in url.lower() for dom in [".gov", "nasa.gov", "jpl.nasa.gov", "who.int"])
+    is_trusted_news = any(dom.split(".")[0] in source_name.lower() or dom in url.lower() for dom in TRUSTED_DOMAINS)
+
     # Compute relevance score
     score = (len(title_overlap) * 4.0) + (len(overlap) * 1.5)
     if has_specific_entity:
         score += 5.0
-    for dom in TRUSTED_DOMAINS:
-        if dom.split(".")[0] in source_name.lower() or dom in url.lower():
-            score += 2.5
-            break
+    if is_official_source:
+        score += 6.0
+    elif is_trusted_news:
+        score += 3.0
 
     # Contextual Classification
     has_contradiction = any(sig in combined_art for sig in CONTRADICTION_SIGNALS)
@@ -274,7 +315,11 @@ def evaluate_article_relevance_and_type(
 
     evidence_type = "related"
 
-    if has_contradiction:
+    # Check for incidental side-meme fact-checks (e.g. rainbow, fake audio/video on Mars)
+    incidental_factcheck_topics = {"rainbow", "audio", "video", "alien", "pyramid", "doorway", "face", "ufo"}
+    has_incidental_meme = any(meme in combined_art for meme in incidental_factcheck_topics if meme not in claim_prof["raw_text"])
+
+    if has_contradiction and not has_incidental_meme:
         # A source is Contradicting/Debunk ONLY if it actually disputes THIS claim or its mechanism
         if claim_prof["assertion_stems"].intersection(mental_tokens):
             # Must explicitly dispute 5g/tower mind-reading or brainwave access
@@ -285,22 +330,53 @@ def evaluate_article_relevance_and_type(
         else:
             evidence_type = "contradicting"
 
-    elif has_supporting:
-        # A source is Supporting ONLY if it actually corroborates the submitted claim
-        if "mars" in claim_prof["assertion_stems"] and "land" in claim_prof["assertion_stems"]:
+    elif not has_contradiction:
+        # 1. Mars rover exploration / geological science corroboration
+        if "perseverance" in claim_prof["assertion_stems"] and "mars" in claim_prof["assertion_stems"]:
+            if "perseverance" in art_stems and ("mars" in art_stems or "rover" in art_stems):
+                exploration_tokens = {
+                    "explore", "study", "geology", "surface", "rock", "sample",
+                    "survey", "impact", "terrain", "drive", "record", "crater",
+                    "history", "ancient", "sol"
+                }
+                if art_stems.intersection(exploration_tokens) or is_official_source or has_supporting:
+                    evidence_type = "supporting"
+                else:
+                    evidence_type = "related"
+
+        # 2. Mars landing corroboration
+        elif "mars" in claim_prof["assertion_stems"] and "land" in claim_prof["assertion_stems"]:
             if "land" in art_stems and ("rover" in art_stems or "mars" in art_stems):
                 evidence_type = "supporting"
             else:
                 evidence_type = "related"
+
+        # 3. Artemis mission corroboration
         elif "artemis" in claim_prof["assertion_stems"]:
-            if "finalized" in art_stems or "approved" in art_stems:
+            artemis_corrob_tokens = {"finalized", "approved", "crew", "selected", "astronauts", "flyby", "schedule"}
+            if art_stems.intersection(artemis_corrob_tokens) or (is_official_source and len(title_overlap) >= 2):
                 evidence_type = "supporting"
             else:
                 evidence_type = "related"
-        elif len(title_overlap) >= 2:
+
+        # 4. Factual claim corroborated by official or trusted sources with high title overlap
+        elif (is_official_source or is_trusted_news) and len(title_overlap) >= 3:
             evidence_type = "supporting"
+
+        # 5. General corroboration with supporting signals
+        elif has_supporting and len(title_overlap) >= 2:
+            evidence_type = "supporting"
+
         else:
             evidence_type = "related"
+
+    # Specific claim domain protections:
+    # If claim asserts remote 5G or tower mind-reading/dream control,
+    # generic BCI research or consumer gadgets cannot corroborate remote tower mind control
+    if claim_prof["assertion_stems"].intersection(mental_tokens):
+        if "5g" in claim_prof["assertion_stems"] or "tower" in claim_prof["assertion_stems"]:
+            if evidence_type == "supporting":
+                evidence_type = "related"
 
     return True, score, evidence_type
 
@@ -359,15 +435,16 @@ class GoogleNewsRSSProvider(EvidenceProvider):
                     link = item.findtext("link", "")
                     pub_date = item.findtext("pubDate", "")
                     source_elem = item.find("source")
-                    source_name = source_elem.text if source_elem is not None else "News Source"
+                    source_raw = source_elem.text if source_elem is not None and source_elem.text else "News Source"
+                    source_name = sanitize_text(source_raw)
 
                     # Extract cleaned title without trailing source name suffix
-                    clean_title = re.sub(r" - [^-]+$", "", title).strip()
+                    raw_title = re.sub(r" - [^-]+$", "", title).strip()
+                    clean_title = sanitize_text(raw_title)
 
                     # Clean snippet
                     description = item.findtext("description", "")
-                    clean_snippet = re.sub(r"<[^>]+>", " ", description)
-                    clean_snippet = re.sub(r"\s+", " ", clean_snippet).strip()
+                    clean_snippet = sanitize_text(description)
                     if not clean_snippet or clean_snippet == clean_title:
                         clean_snippet = f"Reporting by {source_name} on {clean_title}."
 
@@ -539,11 +616,11 @@ async def retrieve_live_evidence(
                 "Coverage reflects indexed journalistic news media and may not be exhaustive for novel, fringe, or unindexed claims."
             )
         else:
-            status_val = "related"
-            msg = f"Retrieved {len(evidence_items)} genuinely relevant related news article(s) providing background and broader context on the subject."
+            status_val = "insufficient" if ml_prediction == 0 else "related"
+            msg = f"Retrieved {len(evidence_items)} related news article(s) covering the broader topic, but none directly confirm or refute the specific assertion."
             corroboration_notes = (
                 f"{msg} Live evidence was queried across {len(queries)} search variants via Google News RSS. "
-                "No direct external refutation or corroboration was found for the exact claim; showing genuinely relevant background coverage only."
+                "No direct external refutation or corroboration was found for the exact claim; showing background coverage only."
             )
 
         return EvidenceSummary(
