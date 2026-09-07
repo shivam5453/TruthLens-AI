@@ -847,20 +847,20 @@ function App() {
           Requirement 1: "My Workspace" is NEVER shown publicly.
           Requirement 2: Engine status shows "Checking..." then "ONLINE"/"OFFLINE".
       ====================================================== */}
-      <header className="top-nav-wrap">
-        <nav className="top-nav">
+      <header className="navbar-container top-nav-wrap">
+        <nav className="navbar top-nav">
           <a
             href="#top"
-            className="brand-link"
+            className="brand brand-link"
             onClick={(e) => {
               e.preventDefault();
               setActiveTab("analyzer");
             }}
           >
-            <div className="brand-icon">
+            <div className="brand-mark brand-icon">
               <ShieldCheck size={18} />
             </div>
-            <div className="brand-text">
+            <div className="brand-copy brand-text">
               <strong>TruthLens</strong>
               <span>AI</span>
             </div>
